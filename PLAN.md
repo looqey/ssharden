@@ -14,10 +14,16 @@ stubbed with clear `TODO(phase-2/3)` markers so the architecture is ready for th
   `serde`/`serde_json`, `url`, `thiserror`.
 - Vault engine: official **`bw` CLI** in `bw serve` mode, bound to `127.0.0.1:<ephemeral>`.
 
-## File layout
+## File layout (cargo workspace: verifiable core + thin GUI shell)
+
+The real logic lives in a **pure-Rust `ssharden-core` crate** with **no `tauri`/webkit
+dependency**, so it compiles and unit-tests on any machine. `src-tauri` is a thin shell
+that wraps core in `#[tauri::command]`s and needs the webkit system libs only to build the
+GUI. This makes the core verifiable *now* and isolates the part that waits on `sudo apt`.
 
 ```
 ssharden/
+  Cargo.toml              # workspace: members = ["crates/ssharden-core", "src-tauri"]
   package.json            # frontend deps + scripts
   vite.config.ts
   index.html
@@ -28,20 +34,24 @@ ssharden/
     hosts.ts              # host-list rendering, grouped by folder, ssh:// filter
     terminal.ts           # xterm.js wiring; PTY byte stream over Tauri events
     styles.css
-  src-tauri/
-    Cargo.toml            # ALL backend deps (single source — implementers don't edit)
-    tauri.conf.json
-    build.rs
+  crates/ssharden-core/   # PURE Rust — no tauri, no webkit; compiles + tests anywhere
+    Cargo.toml            # reqwest, tokio, portable-pty, serde, serde_json, url, thiserror
     src/
-      main.rs             # entrypoint: app state + register all #[tauri::command]s
-      error.rs            # AppError + Result alias
+      lib.rs              # re-exports public API
+      error.rs            # CoreError + Result alias
       vault/mod.rs        # bw serve adapter: spawn/supervise, unlock, lock, sync, list/get
-      vault/model.rs      # Host parsing: Login item + URI scheme → structured Host
-      ssh/mod.rs          # PTY launcher: portable-pty spawns ssh, streams to frontend
+      vault/model.rs      # Host parsing: Login item + URI scheme → Host  (#[cfg(test)] unit tests)
+      ssh/mod.rs          # PTY launcher: portable-pty spawns ssh, yields bytes over a channel
       rdp/mod.rs          # STUB — TODO(phase-2): IronRDP
       sftp/mod.rs         # STUB — TODO(phase-3): SFTP file browser
-  setup.sh                # installs rustup + tauri prereqs + bw CLI; prints next steps
-  README.md               # what it is, how to install toolchain, how to run
+  src-tauri/
+    Cargo.toml            # depends on ssharden-core + tauri; the ONLY webkit-linked crate
+    tauri.conf.json
+    build.rs
+    src/main.rs           # thin: app state + #[tauri::command]s that call core + forward
+                          #       PTY bytes to the webview as `ssh://{id}` events
+  setup.sh                # apt deps (webkit2gtk-4.1 etc.) + reminders; rust/bw already in
+  README.md               # what it is, how to install the GUI system libs, how to run
 ```
 
 ## Backend contract (Tauri commands)
@@ -70,22 +80,32 @@ ssharden/
 
 ## Build / verify reality
 
-- `cargo`/`rustc` are **not installed**, so this pass produces source that compiles once
-  the toolchain exists — it is **not** compile-verified by the workflow.
-- `setup.sh` installs the toolchain; `README.md` documents `bun install` + `cargo tauri dev`.
-- Frontend (`bun install`, `bun run build`) *can* be verified since bun is present.
+Toolchain status on this machine: **Rust 1.96.0 installed**, **bw CLI installed**, **bun
+present**. Missing: Tauri's webkit system libs (`webkit2gtk-4.1`, `gtk-3.0`, `libsoup-3.0`,
+…) which need `sudo apt` (no passwordless sudo here).
+
+- **`ssharden-core` IS compile- and test-verified** by the workflow: `cargo test -p
+  ssharden-core` (no webkit needed). This covers the bw-serve client, Host/URI parsing, and
+  PTY launcher logic — the parts most worth verifying.
+- **Frontend IS verified**: `bun install` + `bun run build`.
+- **`src-tauri` GUI shell is NOT built** until the webkit libs are installed. `setup.sh`
+  prints the exact `sudo apt install …` line; once run, `cargo tauri dev` builds the app.
 
 ## Workflow shape
 
-1. **Scaffold** (1 agent) — create the tree, write the complete `Cargo.toml` /
-   `tauri.conf.json` / `package.json` (the only manifests; implementers don't touch them),
-   plus `main.rs` with module declarations + command registration, and typed stubs that
-   define every interface above.
-2. **Implement** (parallel, against the contracts) — vault adapter, ssh PTY launcher,
-   frontend host-list+unlock, frontend terminal+bridge, setup.sh+README.
-3. **Integrate & verify** (1 agent) — confirm every command is registered and signatures
-   line up, run `bun install`/`bun run build` for the frontend, and report exactly what is
-   and isn't verifiable without Rust.
+1. **Scaffold** (1 agent) — create the workspace tree; write the complete workspace
+   `Cargo.toml`, both crate `Cargo.toml`s, `tauri.conf.json`, `package.json`, `tsconfig`,
+   `vite.config` (the only manifests; implementers don't touch them); write `lib.rs` /
+   `main.rs` with module decls + command registration, and typed stubs defining every
+   interface above so the parallel agents have hard contracts.
+2. **Implement** (parallel, against the contracts) — (a) core vault adapter + Host/URI
+   model with unit tests, (b) core ssh PTY launcher, (c) src-tauri command shell + event
+   forwarding, (d) frontend host-list+unlock, (e) frontend terminal+bridge, (f)
+   setup.sh+README.
+3. **Integrate & verify** (1 agent) — `cargo test -p ssharden-core` (must pass), `bun
+   install` + `bun run build` (must pass), confirm every Tauri command is registered and
+   signatures line up with the frontend `invoke()` calls, and report exactly what is built
+   vs. pending the webkit `sudo apt` step.
 
 ## Out of scope this pass
 RDP (IronRDP), SFTP browser, org/collection sharing, multi-OS packaging, auto-update.
