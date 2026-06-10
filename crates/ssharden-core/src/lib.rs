@@ -12,5 +12,5 @@ pub mod vault;
 
 pub use error::{CoreError, Result};
 pub use ssh::{SshParams, SshSession};
-pub use vault::model::{Host, HostUri};
+pub use vault::model::{Host, HostInput, HostUri};
 pub use vault::VaultClient;

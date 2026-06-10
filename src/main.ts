@@ -1,4 +1,4 @@
-// Bootstrap: unlock screen → host list → terminal tabs.
+// Bootstrap: unlock screen → host list (with management) → terminal tabs.
 
 import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
@@ -7,9 +7,14 @@ import {
   vaultUnlock,
   vaultLock,
   vaultListHosts,
+  hostCreate,
+  hostUpdate,
+  hostDelete,
+  hostPassword,
   type Host,
 } from "./vault";
 import { renderHosts } from "./hosts";
+import { openHostForm } from "./form";
 import { TerminalSession } from "./terminal";
 
 const AUTO_LOCK_MS = 10 * 60 * 1000;
@@ -32,6 +37,10 @@ function root(): HTMLDivElement {
   return app;
 }
 
+function esc(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 // ---------- Unlock screen ----------
 
 function showUnlock(message?: string): void {
@@ -50,7 +59,7 @@ function showUnlock(message?: string): void {
           <input type="password" id="password" autocomplete="off" autofocus />
         </label>
         <button type="submit" id="unlock-btn">Unlock</button>
-        <p class="error" id="unlock-error">${message ? message : ""}</p>
+        <p class="error" id="unlock-error">${message ? esc(message) : ""}</p>
       </form>
     </div>`;
 
@@ -96,6 +105,9 @@ async function showApp(): Promise<void> {
           <span class="brand">ssharden</span>
           <button id="lock-btn" class="ghost" title="Lock vault">Lock</button>
         </div>
+        <div class="host-list-head">
+          <button id="new-host" class="newbtn">+ New host</button>
+        </div>
         <div class="host-list" id="host-list"><p class="hosts-empty">Loading…</p></div>
       </aside>
       <section class="workspace">
@@ -106,9 +118,8 @@ async function showApp(): Promise<void> {
       </section>
     </div>`;
 
-  app.querySelector<HTMLButtonElement>("#lock-btn")!.addEventListener("click", () => {
-    void lock();
-  });
+  app.querySelector<HTMLButtonElement>("#lock-btn")!.addEventListener("click", () => void lock());
+  app.querySelector<HTMLButtonElement>("#new-host")!.addEventListener("click", () => void newHost());
 
   await loadHosts();
 }
@@ -118,13 +129,99 @@ async function loadHosts(): Promise<void> {
   if (!listEl) return;
   try {
     const hosts: Host[] = await vaultListHosts();
-    renderHosts(listEl, hosts, (host) => {
-      void openSession(host);
+    renderHosts(listEl, hosts, {
+      onConnect: (h) => void openSession(h),
+      onEdit: (h) => void editHost(h),
+      onDelete: (h) => void removeHost(h),
+      onCopyPassword: (h) => void revealPassword(h),
     });
   } catch (e) {
-    listEl.innerHTML = `<p class="hosts-empty">Failed to load hosts: ${String(e)}</p>`;
+    listEl.innerHTML = `<p class="hosts-empty">Failed to load hosts: ${esc(String(e))}</p>`;
   }
 }
+
+// ---------- Host management ----------
+
+async function newHost(): Promise<void> {
+  resetAutoLock();
+  const res = await openHostForm();
+  if (!res) return;
+  try {
+    await hostCreate(res.input);
+    toast("Host created");
+    await loadHosts();
+  } catch (e) {
+    toast(`Create failed: ${String(e)}`);
+  }
+}
+
+async function editHost(h: Host): Promise<void> {
+  resetAutoLock();
+  const res = await openHostForm(h);
+  if (!res || !res.id) return;
+  try {
+    await hostUpdate(res.id, res.input);
+    toast("Host saved");
+    await loadHosts();
+  } catch (e) {
+    toast(`Save failed: ${String(e)}`);
+  }
+}
+
+async function removeHost(h: Host): Promise<void> {
+  resetAutoLock();
+  if (!confirm(`Delete host "${h.name}"? This removes the vault item.`)) return;
+  try {
+    await hostDelete(h.id);
+    toast("Host deleted");
+    await loadHosts();
+  } catch (e) {
+    toast(`Delete failed: ${String(e)}`);
+  }
+}
+
+async function revealPassword(h: Host): Promise<void> {
+  resetAutoLock();
+  let pw: string | null;
+  try {
+    pw = await hostPassword(h.id);
+  } catch (e) {
+    toast(String(e));
+    return;
+  }
+  if (pw == null) {
+    toast("No password set on this host");
+    return;
+  }
+  const ov = document.createElement("div");
+  ov.className = "modal-overlay";
+  ov.innerHTML = `
+    <div class="modal-card pw-card">
+      <h2>Password — ${esc(h.name)}</h2>
+      <code class="pw-value">${esc(pw)}</code>
+      <div class="modal-actions">
+        <button class="ghost" id="pw-close">Close</button>
+        <button id="pw-copy">Copy</button>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+  const close = () => ov.remove();
+  ov.addEventListener("mousedown", (e) => {
+    if (e.target === ov) close();
+  });
+  ov.querySelector<HTMLButtonElement>("#pw-close")!.addEventListener("click", close);
+  ov.querySelector<HTMLButtonElement>("#pw-copy")!.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(pw!);
+      toast("Password copied");
+    } catch {
+      toast("Clipboard unavailable");
+    }
+    close();
+  });
+}
+
+// ---------- Terminal tabs ----------
 
 async function openSession(host: Host): Promise<void> {
   resetAutoLock();
@@ -141,23 +238,20 @@ async function openSession(host: Host): Promise<void> {
     session = await TerminalSession.connect(pane, host.id);
   } catch (e) {
     pane.remove();
-    alert(`Could not connect to ${host.name}: ${String(e)}`);
+    toast(`Could not connect to ${host.name}: ${String(e)}`);
     return;
   }
 
   const tabButton = document.createElement("button");
   tabButton.className = "tab";
-  tabButton.innerHTML = `<span>${host.name}</span><span class="tab-close" title="Close">×</span>`;
+  tabButton.innerHTML = `<span>${esc(host.name)}</span><span class="tab-close" title="Close">×</span>`;
 
   const tab: Tab = { id: session.sessionId, title: host.name, session, pane, tabButton };
   tabs.push(tab);
 
   tabButton.addEventListener("click", (ev) => {
-    if ((ev.target as HTMLElement).classList.contains("tab-close")) {
-      closeTab(tab);
-    } else {
-      activateTab(tab);
-    }
+    if ((ev.target as HTMLElement).classList.contains("tab-close")) closeTab(tab);
+    else activateTab(tab);
   });
   tabstrip.appendChild(tabButton);
   activateTab(tab);
@@ -181,7 +275,7 @@ function closeTab(tab: Tab): void {
   if (tabs.length) activateTab(tabs[tabs.length - 1]);
 }
 
-// ---------- Lock / auto-lock ----------
+// ---------- Lock / auto-lock / toast ----------
 
 async function lock(): Promise<void> {
   for (const t of tabs.splice(0)) t.session.dispose();
@@ -199,7 +293,21 @@ function resetAutoLock(): void {
   autoLockTimer = setTimeout(() => void lock(), AUTO_LOCK_MS);
 }
 
-// Reset the idle timer on user activity while unlocked.
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+function toast(message: string): void {
+  let el = document.querySelector<HTMLDivElement>("#toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "toast";
+    el.className = "toast";
+    document.body.appendChild(el);
+  }
+  el.textContent = message;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el!.classList.remove("show"), 2500);
+}
+
 for (const evt of ["keydown", "mousedown", "mousemove"]) {
   window.addEventListener(evt, () => resetAutoLock(), { passive: true });
 }

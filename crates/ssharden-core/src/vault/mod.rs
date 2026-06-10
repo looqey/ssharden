@@ -10,7 +10,9 @@
 
 pub mod model;
 
-pub use model::{host_from_cipher, parse_host_uri, Host, HostUri};
+pub use model::{
+    host_from_cipher, login_cipher_json, parse_host_uri, Host, HostInput, HostUri,
+};
 
 use std::net::TcpListener;
 use std::time::Duration;
@@ -201,6 +203,81 @@ impl VaultClient {
             .ok_or_else(|| CoreError::Bw("unexpected item list shape".to_string()))?;
 
         Ok(items.iter().filter_map(host_from_cipher).collect())
+    }
+
+    /// Fetch a single item's full (decrypted) cipher JSON by id.
+    pub async fn get_item(&self, id: &str) -> Result<serde_json::Value> {
+        let body = self
+            .http
+            .get(format!("{}/object/item/{id}", self.base_url))
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+        check_success(&body)?;
+        body.get("data").cloned().ok_or(CoreError::NotFound)
+    }
+
+    /// Create a new host (Login item) from user input.
+    pub async fn create_host(&self, input: &HostInput) -> Result<()> {
+        let cipher = login_cipher_json(input, None);
+        let body = self
+            .http
+            .post(format!("{}/object/item", self.base_url))
+            .json(&cipher)
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+        check_success(&body)
+    }
+
+    /// Update an existing host, preserving fields the input leaves blank.
+    pub async fn update_host(&self, id: &str, input: &HostInput) -> Result<()> {
+        let existing = self.get_item(id).await?;
+        let cipher = login_cipher_json(input, Some(&existing));
+        let body = self
+            .http
+            .put(format!("{}/object/item/{id}", self.base_url))
+            .json(&cipher)
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+        check_success(&body)
+    }
+
+    /// Delete a host by id.
+    pub async fn delete_host(&self, id: &str) -> Result<()> {
+        let resp = self
+            .http
+            .delete(format!("{}/object/item/{id}", self.base_url))
+            .send()
+            .await?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if status.is_success() {
+            // Some bw serve builds still return a wrapper; surface an explicit failure.
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                if v.get("success").and_then(|s| s.as_bool()) == Some(false) {
+                    return check_success(&v);
+                }
+            }
+            Ok(())
+        } else {
+            Err(CoreError::Bw(format!("delete failed ({status}): {}", text.trim())))
+        }
+    }
+
+    /// Fetch just the (decrypted) password for a host, for copy/reveal.
+    pub async fn host_password(&self, id: &str) -> Result<Option<String>> {
+        let item = self.get_item(id).await?;
+        Ok(item
+            .get("login")
+            .and_then(|l| l.get("password"))
+            .and_then(|p| p.as_str())
+            .filter(|p| !p.is_empty())
+            .map(str::to_string))
     }
 
     /// Terminate the owned `bw serve` child, if any, and clear the session.

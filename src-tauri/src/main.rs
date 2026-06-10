@@ -15,7 +15,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex as StdMutex;
 
-use ssharden_core::{Host, SshParams, SshSession, VaultClient};
+use ssharden_core::{Host, HostInput, SshParams, SshSession, VaultClient};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -87,6 +87,42 @@ async fn vault_list_hosts(state: State<'_, AppState>) -> Result<Vec<Host>, Strin
     let guard = state.vault.lock().await;
     let client = guard.as_ref().ok_or("vault not started")?;
     client.list_hosts().await.map_err(e)
+}
+
+/// Create a new host (Login item) in the vault.
+#[tauri::command]
+async fn host_create(state: State<'_, AppState>, input: HostInput) -> Result<(), String> {
+    let guard = state.vault.lock().await;
+    let client = guard.as_ref().ok_or("vault not started")?;
+    client.create_host(&input).await.map_err(e)
+}
+
+/// Update an existing host; blank password/folder are preserved.
+#[tauri::command]
+async fn host_update(
+    state: State<'_, AppState>,
+    id: String,
+    input: HostInput,
+) -> Result<(), String> {
+    let guard = state.vault.lock().await;
+    let client = guard.as_ref().ok_or("vault not started")?;
+    client.update_host(&id, &input).await.map_err(e)
+}
+
+/// Delete a host by id.
+#[tauri::command]
+async fn host_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let guard = state.vault.lock().await;
+    let client = guard.as_ref().ok_or("vault not started")?;
+    client.delete_host(&id).await.map_err(e)
+}
+
+/// Fetch a host's password for copy/reveal (user-initiated secret egress).
+#[tauri::command]
+async fn host_password(state: State<'_, AppState>, id: String) -> Result<Option<String>, String> {
+    let guard = state.vault.lock().await;
+    let client = guard.as_ref().ok_or("vault not started")?;
+    client.host_password(&id).await.map_err(e)
 }
 
 /// Resolve a host, spawn `ssh` in a PTY, stream stdout as `ssh://{id}` events.
@@ -188,6 +224,10 @@ fn main() {
             vault_unlock,
             vault_lock,
             vault_list_hosts,
+            host_create,
+            host_update,
+            host_delete,
+            host_password,
             ssh_connect,
             ssh_write,
             ssh_resize,

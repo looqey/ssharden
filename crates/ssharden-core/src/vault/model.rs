@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// A connectable host parsed from a Bitwarden Login item.
 #[derive(Debug, Clone, Serialize)]
@@ -160,6 +160,93 @@ pub fn host_from_cipher(v: &serde_json::Value) -> Option<Host> {
     })
 }
 
+/// User-supplied fields for creating or editing a host (a Bitwarden Login item).
+#[derive(Debug, Clone, Deserialize)]
+pub struct HostInput {
+    /// Display name.
+    pub name: String,
+    /// Folder id, or `None` to leave unchanged (edit) / unfiled (create).
+    #[serde(default)]
+    pub folder_id: Option<String>,
+    /// Login username.
+    #[serde(default)]
+    pub username: Option<String>,
+    /// Password. Empty/`None` on edit means "keep the existing password".
+    #[serde(default)]
+    pub password: Option<String>,
+    /// Raw connection URIs, e.g. `ssh://host:22`.
+    #[serde(default)]
+    pub uris: Vec<String>,
+    /// Custom fields (e.g. `jump`, `domain`).
+    #[serde(default)]
+    pub fields: BTreeMap<String, String>,
+}
+
+/// Build a Bitwarden Login cipher JSON from a [`HostInput`].
+///
+/// `base` is the existing cipher when editing: unspecified bits (password when the
+/// input leaves it blank, folder when `folder_id` is `None`, notes/totp/reprompt) are
+/// carried over so an edit doesn't silently wipe them.
+pub fn login_cipher_json(input: &HostInput, base: Option<&serde_json::Value>) -> serde_json::Value {
+    use serde_json::json;
+
+    let existing_pw = base
+        .and_then(|b| b.get("login"))
+        .and_then(|l| l.get("password"))
+        .and_then(|p| p.as_str());
+    let password = match input.password.as_deref() {
+        Some(p) if !p.is_empty() => Some(p),
+        _ => existing_pw,
+    };
+
+    let folder_id = match &input.folder_id {
+        Some(f) if !f.is_empty() => json!(f),
+        _ => base
+            .and_then(|b| b.get("folderId"))
+            .cloned()
+            .unwrap_or(json!(null)),
+    };
+
+    let uris: Vec<_> = input
+        .uris
+        .iter()
+        .filter(|u| !u.trim().is_empty())
+        .map(|u| json!({ "match": null, "uri": u }))
+        .collect();
+
+    let fields: Vec<_> = input
+        .fields
+        .iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(k, v)| json!({ "name": k, "value": v, "type": 0, "linkedId": null }))
+        .collect();
+
+    let carry = |k: &str, default: serde_json::Value| {
+        base.and_then(|b| b.get(k)).cloned().unwrap_or(default)
+    };
+
+    json!({
+        "organizationId": null,
+        "folderId": folder_id,
+        "type": 1,
+        "name": input.name,
+        "notes": carry("notes", json!(null)),
+        "favorite": carry("favorite", json!(false)),
+        "fields": fields,
+        "login": {
+            "uris": uris,
+            "username": input.username,
+            "password": password,
+            "totp": base
+                .and_then(|b| b.get("login"))
+                .and_then(|l| l.get("totp"))
+                .cloned()
+                .unwrap_or(json!(null)),
+        },
+        "reprompt": carry("reprompt", json!(0)),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,5 +327,56 @@ mod tests {
     fn non_login_item_is_not_a_host() {
         let note = json!({ "id": "n", "name": "a note", "type": 2 });
         assert!(host_from_cipher(&note).is_none());
+    }
+
+    #[test]
+    fn builds_create_cipher_from_input() {
+        let input = HostInput {
+            name: "web-01".into(),
+            folder_id: None,
+            username: Some("root".into()),
+            password: Some("s3cret".into()),
+            uris: vec!["ssh://web-01.lan:22".into(), "".into()],
+            fields: {
+                let mut m = BTreeMap::new();
+                m.insert("jump".to_string(), "bastion".to_string());
+                m.insert("blank".to_string(), "".to_string());
+                m
+            },
+        };
+        let c = login_cipher_json(&input, None);
+        assert_eq!(c["type"], 1);
+        assert_eq!(c["name"], "web-01");
+        assert_eq!(c["folderId"], json!(null));
+        assert_eq!(c["login"]["username"], "root");
+        assert_eq!(c["login"]["password"], "s3cret");
+        assert_eq!(c["login"]["uris"].as_array().unwrap().len(), 1); // empty uri dropped
+        assert_eq!(c["login"]["uris"][0]["uri"], "ssh://web-01.lan:22");
+        let fields = c["fields"].as_array().unwrap();
+        assert_eq!(fields.len(), 1); // empty-valued field dropped
+        assert_eq!(fields[0]["name"], "jump");
+    }
+
+    #[test]
+    fn edit_keeps_password_and_folder_when_blank() {
+        let base = json!({
+            "folderId": "folder-7",
+            "notes": "keep me",
+            "login": { "password": "OLDPASS", "totp": "seed" }
+        });
+        let input = HostInput {
+            name: "renamed".into(),
+            folder_id: None,           // keep existing folder
+            username: Some("admin".into()),
+            password: None,            // keep existing password
+            uris: vec!["rdp://h:3389".into()],
+            fields: BTreeMap::new(),
+        };
+        let c = login_cipher_json(&input, Some(&base));
+        assert_eq!(c["login"]["password"], "OLDPASS");
+        assert_eq!(c["folderId"], "folder-7");
+        assert_eq!(c["notes"], "keep me");
+        assert_eq!(c["login"]["totp"], "seed");
+        assert_eq!(c["name"], "renamed");
     }
 }

@@ -1,9 +1,15 @@
-// Host-list rendering: grouped by folder, filtered to ssh:// URIs for Phase 0.
+// Host-list rendering: grouped by folder, filtered to ssh:// URIs for Phase 0,
+// with per-row actions (connect / edit / copy password / delete).
 
 import type { Host } from "./vault";
 
-/** Callback fired when the user picks a host to connect to. */
-export type OnConnect = (host: Host, uriIndex: number) => void;
+/** Actions wired to each host row. */
+export interface HostActions {
+  onConnect: (host: Host) => void;
+  onEdit: (host: Host) => void;
+  onDelete: (host: Host) => void;
+  onCopyPassword: (host: Host) => void;
+}
 
 /** Minimal HTML-escape for untrusted vault strings rendered into the DOM. */
 function escapeHtml(s: string): string {
@@ -16,12 +22,12 @@ function escapeHtml(s: string): string {
 
 /**
  * Render the host list into `container`, grouped by folder and filtered to the
- * `ssh` scheme for Phase 0. Wires each row to `onConnect`.
+ * `ssh` scheme for Phase 0. Wires each row to the supplied actions.
  */
 export function renderHosts(
   container: HTMLElement,
   hosts: Host[],
-  onConnect: OnConnect,
+  actions: HostActions,
 ): void {
   container.innerHTML = "";
 
@@ -30,12 +36,11 @@ export function renderHosts(
     const empty = document.createElement("p");
     empty.className = "hosts-empty";
     empty.textContent =
-      "No SSH hosts found. Add a Bitwarden Login item with an ssh:// URI.";
+      "No SSH hosts yet. Use + New host to add one (a Login item with an ssh:// URI).";
     container.appendChild(empty);
     return;
   }
 
-  // Group by folder id (Phase 0 has only the id, not the folder name).
   const groups = new Map<string, Host[]>();
   for (const h of sshHosts) {
     const key = h.folder_id ?? "";
@@ -54,21 +59,46 @@ export function renderHosts(
     section.appendChild(title);
 
     for (const h of hs) {
-      const idx = h.uris.findIndex((u) => u.scheme === "ssh");
-      const uri = h.uris[idx];
+      const uri = h.uris.find((u) => u.scheme === "ssh")!;
       const who = uri.user ?? h.username ?? "";
       const detail = `${who ? who + "@" : ""}${uri.host}:${uri.port ?? 22}`;
 
-      const row = document.createElement("button");
+      const row = document.createElement("div");
       row.className = "host-row";
-      row.type = "button";
-      row.innerHTML =
+
+      const main = document.createElement("button");
+      main.className = "host-main";
+      main.type = "button";
+      main.title = "Connect (SSH)";
+      main.innerHTML =
         `<span class="host-name">${escapeHtml(h.name)}</span>` +
         `<span class="host-detail">${escapeHtml(detail)}</span>`;
-      row.addEventListener("click", () => onConnect(h, idx));
+      main.addEventListener("click", () => actions.onConnect(h));
+
+      const acts = document.createElement("div");
+      acts.className = "host-actions";
+      acts.appendChild(iconBtn("⧉", "Copy password", () => actions.onCopyPassword(h)));
+      acts.appendChild(iconBtn("✎", "Edit", () => actions.onEdit(h)));
+      acts.appendChild(iconBtn("🗑", "Delete", () => actions.onDelete(h)));
+
+      row.appendChild(main);
+      row.appendChild(acts);
       section.appendChild(row);
     }
 
     container.appendChild(section);
   }
+}
+
+function iconBtn(glyph: string, title: string, onClick: () => void): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.className = "icon-btn";
+  b.type = "button";
+  b.title = title;
+  b.textContent = glyph;
+  b.addEventListener("click", (e) => {
+    e.stopPropagation();
+    onClick();
+  });
+  return b;
 }

@@ -46,3 +46,34 @@ export async function vaultLock(): Promise<void> {
 export async function vaultListHosts(): Promise<Host[]> {
   return invoke("vault_list_hosts");
 }
+
+/** User-supplied fields for creating or editing a host. */
+export interface HostInput {
+  name: string;
+  folder_id?: string | null;
+  username?: string | null;
+  /** Empty/omitted on edit = keep the existing password. */
+  password?: string | null;
+  uris: string[];
+  fields: Record<string, string>;
+}
+
+/** Create a new host (Login item). */
+export async function hostCreate(input: HostInput): Promise<void> {
+  return invoke("host_create", { input });
+}
+
+/** Update an existing host; blank password/folder are preserved. */
+export async function hostUpdate(id: string, input: HostInput): Promise<void> {
+  return invoke("host_update", { id, input });
+}
+
+/** Delete a host by id. */
+export async function hostDelete(id: string): Promise<void> {
+  return invoke("host_delete", { id });
+}
+
+/** Fetch a host's password for copy/reveal. */
+export async function hostPassword(id: string): Promise<string | null> {
+  return invoke("host_password", { id });
+}
