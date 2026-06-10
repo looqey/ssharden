@@ -29,12 +29,21 @@ export async function vaultStart(): Promise<void> {
   return invoke("vault_start");
 }
 
-/** Configure the server URL (if needed) and unlock with the master password. */
-export async function vaultUnlock(
-  serverUrl: string,
-  masterPassword: string,
-): Promise<void> {
-  return invoke("vault_unlock", { serverUrl, masterPassword });
+/** Unlock the already-logged-in vault with the master password. */
+export async function vaultUnlock(masterPassword: string): Promise<void> {
+  return invoke("vault_unlock", { serverUrl: "", masterPassword });
+}
+
+/** Auth/lock state of the bw account (which account is logged in). */
+export interface AccountStatus {
+  server_url: string | null;
+  user_email: string | null;
+  status: string; // "unauthenticated" | "locked" | "unlocked"
+}
+
+/** Read which bw account is logged in (for the unlock screen). */
+export async function accountStatus(): Promise<AccountStatus> {
+  return invoke("account_status");
 }
 
 /** Lock the vault and zeroize the session token. */

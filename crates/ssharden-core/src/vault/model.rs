@@ -40,6 +40,17 @@ pub struct HostUri {
     pub raw: String,
 }
 
+/// Authentication/lock state of the `bw` CLI account (from `bw status`).
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountStatus {
+    /// Configured server URL, if any.
+    pub server_url: Option<String>,
+    /// Logged-in account email, if authenticated.
+    pub user_email: Option<String>,
+    /// `unauthenticated` | `locked` | `unlocked`.
+    pub status: String,
+}
+
 /// Default port for a recognized scheme, or `None` if the scheme is not a host protocol.
 fn default_port(scheme: &str) -> Option<u16> {
     match scheme {

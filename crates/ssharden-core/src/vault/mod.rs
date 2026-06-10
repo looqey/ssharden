@@ -11,8 +11,29 @@
 pub mod model;
 
 pub use model::{
-    host_from_cipher, login_cipher_json, parse_host_uri, Host, HostInput, HostUri,
+    host_from_cipher, login_cipher_json, parse_host_uri, AccountStatus, Host, HostInput, HostUri,
 };
+
+/// Read the `bw` CLI account status (`bw status`) without needing `bw serve`.
+///
+/// Used to show which account a user is unlocking before the vault is started.
+pub async fn account_status(bw_bin: &str) -> Result<AccountStatus> {
+    let out = tokio::process::Command::new(bw_bin)
+        .arg("status")
+        .output()
+        .await
+        .map_err(|e| CoreError::Spawn(format!("`bw status` failed: {e}")))?;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    Ok(AccountStatus {
+        server_url: v.get("serverUrl").and_then(|x| x.as_str()).map(str::to_string),
+        user_email: v.get("userEmail").and_then(|x| x.as_str()).map(str::to_string),
+        status: v
+            .get("status")
+            .and_then(|x| x.as_str())
+            .unwrap_or("unknown")
+            .to_string(),
+    })
+}
 
 use std::net::TcpListener;
 use std::time::Duration;

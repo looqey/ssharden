@@ -6,6 +6,7 @@ import {
   vaultStart,
   vaultUnlock,
   vaultLock,
+  accountStatus,
   vaultListHosts,
   hostCreate,
   hostUpdate,
@@ -51,10 +52,7 @@ function showUnlock(message?: string): void {
     <div class="unlock">
       <form class="unlock-card" id="unlock-form">
         <h1>ssharden</h1>
-        <p class="subtitle">Unlock your Vaultwarden host inventory</p>
-        <label>Server URL <span class="optional">(optional)</span>
-          <input type="url" id="server" placeholder="https://vault.example.com" autocomplete="off" />
-        </label>
+        <p class="subtitle" id="unlock-account">Unlock your vault</p>
         <label>Master password
           <input type="password" id="password" autocomplete="off" autofocus />
         </label>
@@ -66,13 +64,28 @@ function showUnlock(message?: string): void {
   const form = app.querySelector<HTMLFormElement>("#unlock-form")!;
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
-    const server = app.querySelector<HTMLInputElement>("#server")!.value.trim();
     const password = app.querySelector<HTMLInputElement>("#password")!.value;
-    void doUnlock(server, password);
+    void doUnlock(password);
   });
+
+  // Show which account will be unlocked (login happens once via the bw CLI).
+  void accountStatus()
+    .then((st) => {
+      const el = document.querySelector<HTMLElement>("#unlock-account");
+      if (!el) return;
+      if (st.status === "unauthenticated" || !st.user_email) {
+        el.innerHTML = `Not logged in — run <code>bw login</code> in a terminal first.`;
+        el.classList.add("warn");
+      } else {
+        el.innerHTML = `Unlocking <strong>${esc(st.user_email)}</strong>`;
+      }
+    })
+    .catch(() => {
+      /* leave the default subtitle */
+    });
 }
 
-async function doUnlock(serverUrl: string, password: string): Promise<void> {
+async function doUnlock(password: string): Promise<void> {
   const errEl = document.querySelector<HTMLElement>("#unlock-error");
   const btn = document.querySelector<HTMLButtonElement>("#unlock-btn");
   if (btn) {
@@ -81,7 +94,7 @@ async function doUnlock(serverUrl: string, password: string): Promise<void> {
   }
   try {
     await vaultStart();
-    await vaultUnlock(serverUrl, password);
+    await vaultUnlock(password);
     unlocked = true;
     await showApp();
     resetAutoLock();

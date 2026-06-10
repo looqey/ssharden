@@ -449,3 +449,16 @@ button {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
 }
+
+.subtitle.warn {
+  color: var(--danger);
+}
+
+.unlock-card code {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 0.3em;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+}
