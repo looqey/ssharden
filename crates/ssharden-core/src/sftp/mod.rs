@@ -124,6 +124,25 @@ impl SftpConn {
         Ok(())
     }
 
+    /// Create a remote directory.
+    pub async fn create_dir(&self, path: &str) -> Result<()> {
+        self.sftp.create_dir(path).await.map_err(sftp_err)
+    }
+
+    /// Rename/move a remote path.
+    pub async fn rename(&self, from: &str, to: &str) -> Result<()> {
+        self.sftp.rename(from, to).await.map_err(sftp_err)
+    }
+
+    /// Remove a remote file or (empty) directory.
+    pub async fn remove(&self, path: &str, is_dir: bool) -> Result<()> {
+        if is_dir {
+            self.sftp.remove_dir(path).await.map_err(sftp_err)
+        } else {
+            self.sftp.remove_file(path).await.map_err(sftp_err)
+        }
+    }
+
     /// Upload a local file to a remote path.
     pub async fn upload(&self, local: &Path, remote: &str) -> Result<()> {
         let data = tokio::fs::read(local).await?;

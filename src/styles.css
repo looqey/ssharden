@@ -608,3 +608,41 @@ button {
   font-size: 0.78rem;
   min-height: 1.6em;
 }
+
+.fb-mkdir {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 0.2rem 0.45rem;
+}
+
+.fb-mkdir:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.fb-acts {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+}
+
+.fb-row:hover .fb-acts {
+  opacity: 1;
+}
+
+.fb-iconact {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  border-radius: 5px;
+  padding: 0.1rem 0.3rem;
+  font-size: 0.8rem;
+}
+
+.fb-iconact:hover {
+  color: var(--fg);
+  background: var(--bg);
+}

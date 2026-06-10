@@ -80,6 +80,7 @@ export class SftpBrowser {
               <span class="fb-title">Local</span>
               <button class="fb-up" data-side="local" title="Up">↑</button>
               <input class="fb-path" data-side="local" spellcheck="false" />
+              <button class="fb-mkdir" data-side="local" title="New folder">＋</button>
               <button class="fb-refresh" data-side="local" title="Refresh">⟳</button>
             </div>
             <div class="fb-list" data-side="local"></div>
@@ -89,6 +90,7 @@ export class SftpBrowser {
               <span class="fb-title">Remote</span>
               <button class="fb-up" data-side="remote" title="Up">↑</button>
               <input class="fb-path" data-side="remote" spellcheck="false" />
+              <button class="fb-mkdir" data-side="remote" title="New folder">＋</button>
               <button class="fb-refresh" data-side="remote" title="Refresh">⟳</button>
             </div>
             <div class="fb-list" data-side="remote"></div>
@@ -115,6 +117,9 @@ export class SftpBrowser {
         if (b.dataset.side === "local") void this.refreshLocal();
         else void this.refreshRemote();
       }),
+    );
+    mount.querySelectorAll<HTMLButtonElement>(".fb-mkdir").forEach((b) =>
+      b.addEventListener("click", () => this.mkdir(b.dataset.side as "local" | "remote")),
     );
     const wirePath = (el: HTMLInputElement, side: "local" | "remote") =>
       el.addEventListener("keydown", (e) => {
@@ -170,31 +175,42 @@ export class SftpBrowser {
         `<span class="fb-icon">${icon}</span>` +
         `<span class="fb-name">${esc(ent.name)}</span>${meta}`;
 
+      const acts = document.createElement("span");
+      acts.className = "fb-acts";
+
       if (ent.is_dir) {
         row.addEventListener("click", () => {
           const base = side === "local" ? this.localPath : this.remotePath;
           this.go(side, join(base, ent.name));
         });
       } else {
-        const btn = document.createElement("button");
-        btn.className = "fb-xfer";
+        const xfer = document.createElement("button");
+        xfer.className = "fb-xfer";
         if (side === "remote") {
-          btn.textContent = "← get";
-          btn.title = "Download to local";
-          btn.addEventListener("click", (e) => {
+          xfer.textContent = "← get";
+          xfer.title = "Download to local";
+          xfer.addEventListener("click", (e) => {
             e.stopPropagation();
             void this.download(ent.name);
           });
         } else {
-          btn.textContent = "put →";
-          btn.title = "Upload to remote";
-          btn.addEventListener("click", (e) => {
+          xfer.textContent = "put →";
+          xfer.title = "Upload to remote";
+          xfer.addEventListener("click", (e) => {
             e.stopPropagation();
             void this.upload(ent.name);
           });
         }
-        row.appendChild(btn);
+        acts.appendChild(xfer);
       }
+
+      acts.appendChild(
+        this.iconAct("✎", "Rename", () => this.renameEntry(side, ent)),
+      );
+      acts.appendChild(
+        this.iconAct("🗑", "Delete", () => this.removeEntry(side, ent)),
+      );
+      row.appendChild(acts);
       container.appendChild(row);
     }
     if (entries.length === 0) {
@@ -204,6 +220,68 @@ export class SftpBrowser {
 
   private status(msg: string): void {
     this.statusEl.textContent = msg;
+  }
+
+  private iconAct(glyph: string, title: string, onClick: () => void): HTMLButtonElement {
+    const b = document.createElement("button");
+    b.className = "fb-iconact";
+    b.textContent = glyph;
+    b.title = title;
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void onClick();
+    });
+    return b;
+  }
+
+  private refresh(side: "local" | "remote"): Promise<void> {
+    return side === "local" ? this.refreshLocal() : this.refreshRemote();
+  }
+
+  private async mkdir(side: "local" | "remote"): Promise<void> {
+    const base = side === "local" ? this.localPath : this.remotePath;
+    const name = prompt("New folder name:");
+    if (!name) return;
+    const path = join(base, name);
+    this.status(`Creating ${name}…`);
+    try {
+      if (side === "local") await invoke("local_mkdir", { path });
+      else await invoke("sftp_mkdir", { connId: this.connId, path });
+      this.status(`Created ${name}`);
+      await this.refresh(side);
+    } catch (e) {
+      this.status(`mkdir failed: ${String(e)}`);
+    }
+  }
+
+  private async renameEntry(side: "local" | "remote", ent: FsEntry): Promise<void> {
+    const newName = prompt("Rename to:", ent.name);
+    if (!newName || newName === ent.name) return;
+    const base = side === "local" ? this.localPath : this.remotePath;
+    const from = join(base, ent.name);
+    const to = join(base, newName);
+    try {
+      if (side === "local") await invoke("local_rename", { from, to });
+      else await invoke("sftp_rename", { connId: this.connId, from, to });
+      this.status(`Renamed to ${newName}`);
+      await this.refresh(side);
+    } catch (e) {
+      this.status(`rename failed: ${String(e)}`);
+    }
+  }
+
+  private async removeEntry(side: "local" | "remote", ent: FsEntry): Promise<void> {
+    if (!confirm(`Delete ${ent.is_dir ? "folder" : "file"} "${ent.name}"?`)) return;
+    const base = side === "local" ? this.localPath : this.remotePath;
+    const path = join(base, ent.name);
+    try {
+      if (side === "local") await invoke("local_rm", { path, isDir: ent.is_dir });
+      else await invoke("sftp_rm", { connId: this.connId, path, isDir: ent.is_dir });
+      this.status(`Deleted ${ent.name}`);
+      await this.refresh(side);
+    } catch (e) {
+      this.status(`delete failed: ${String(e)}`);
+    }
   }
 
   private async download(name: string): Promise<void> {

@@ -405,6 +405,59 @@ fn local_ls(path: String) -> Result<Vec<FsEntry>, String> {
     Ok(out)
 }
 
+/// Create a remote directory.
+#[tauri::command]
+async fn sftp_mkdir(state: State<'_, AppState>, conn_id: String, path: String) -> Result<(), String> {
+    let conn = sftp_get_conn(state.inner(), &conn_id).await?;
+    conn.create_dir(&path).await.map_err(e)
+}
+
+/// Rename/move a remote path.
+#[tauri::command]
+async fn sftp_rename(
+    state: State<'_, AppState>,
+    conn_id: String,
+    from: String,
+    to: String,
+) -> Result<(), String> {
+    let conn = sftp_get_conn(state.inner(), &conn_id).await?;
+    conn.rename(&from, &to).await.map_err(e)
+}
+
+/// Remove a remote file or empty directory.
+#[tauri::command]
+async fn sftp_rm(
+    state: State<'_, AppState>,
+    conn_id: String,
+    path: String,
+    is_dir: bool,
+) -> Result<(), String> {
+    let conn = sftp_get_conn(state.inner(), &conn_id).await?;
+    conn.remove(&path, is_dir).await.map_err(e)
+}
+
+/// Create a local directory.
+#[tauri::command]
+fn local_mkdir(path: String) -> Result<(), String> {
+    std::fs::create_dir(&path).map_err(|err| err.to_string())
+}
+
+/// Rename/move a local path.
+#[tauri::command]
+fn local_rename(from: String, to: String) -> Result<(), String> {
+    std::fs::rename(&from, &to).map_err(|err| err.to_string())
+}
+
+/// Remove a local file or empty directory.
+#[tauri::command]
+fn local_rm(path: String, is_dir: bool) -> Result<(), String> {
+    if is_dir {
+        std::fs::remove_dir(&path).map_err(|err| err.to_string())
+    } else {
+        std::fs::remove_file(&path).map_err(|err| err.to_string())
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
@@ -429,6 +482,12 @@ fn main() {
             sftp_close,
             local_home,
             local_ls,
+            sftp_mkdir,
+            sftp_rename,
+            sftp_rm,
+            local_mkdir,
+            local_rename,
+            local_rm,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
