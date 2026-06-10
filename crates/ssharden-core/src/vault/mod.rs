@@ -83,12 +83,28 @@ impl VaultClient {
         let port = pick_loopback_port()?;
         let base_url = format!("http://127.0.0.1:{port}");
 
-        let mut child = tokio::process::Command::new(bw_bin)
-            .args(["serve", "--hostname", "127.0.0.1", "--port", &port.to_string()])
+        let mut cmd = tokio::process::Command::new(bw_bin);
+        cmd.args(["serve", "--hostname", "127.0.0.1", "--port", &port.to_string()])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+
+        // Tie `bw serve`'s lifetime to ours: if this process dies (even by SIGKILL),
+        // the kernel sends `bw serve` SIGTERM, so it can never be orphaned. Without
+        // this, hard-killing the app leaves stray `bw serve` instances that fight
+        // over the shared `bw` data file.
+        #[cfg(target_os = "linux")]
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+
+        let mut child = cmd
             .spawn()
             .map_err(|e| CoreError::Spawn(format!("failed to spawn `{bw_bin} serve`: {e}")))?;
 
