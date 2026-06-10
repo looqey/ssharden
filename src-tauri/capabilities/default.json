@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core permissions for the main window (includes event listen/emit for the SSH terminal stream).",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
