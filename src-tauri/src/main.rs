@@ -139,8 +139,8 @@ async fn ssh_connect(
     state: State<'_, AppState>,
     host_id: String,
 ) -> Result<String, String> {
-    // Resolve the host and its ssh URI under the vault lock, then release it.
-    let params = {
+    // Resolve the host (and its stored password) under the vault lock, then release it.
+    let (params, password) = {
         let guard = state.vault.lock().await;
         let client = guard.as_ref().ok_or("vault not started")?;
         let hosts = client.list_hosts().await.map_err(e)?;
@@ -154,33 +154,60 @@ async fn ssh_connect(
             .find(|u| u.scheme == "ssh")
             .ok_or("host has no ssh:// uri")?
             .clone();
-        SshParams {
-            host: uri.host,
-            port: uri.port.unwrap_or(22),
-            user: uri.user.or(host.username),
-            jump: host.fields.get("jump").cloned(),
-        }
+        // Fetch the stored password for auto-auth (best effort; None = prompt manually).
+        let password = client.host_password(&host_id).await.ok().flatten();
+        (
+            SshParams {
+                host: uri.host,
+                port: uri.port.unwrap_or(22),
+                user: uri.user.or(host.username),
+                jump: host.fields.get("jump").cloned(),
+            },
+            password,
+        )
     };
 
     // Spawn ssh in a PTY (sync; no locks held).
     let mut session = SshSession::spawn(&params).map_err(e)?;
     let reader = session.take_reader().ok_or("could not open pty reader")?;
     let writer = session.writer().map_err(e)?;
+    // A second writer for auto-auth injection (independent dup of the pty fd).
+    let mut auth_writer = session.writer().map_err(e)?;
 
     let id = format!("s{}", state.next_id.fetch_add(1, Ordering::Relaxed));
     let event = format!("ssh://{id}");
 
-    // Forward PTY bytes to the webview until EOF.
+    // Forward PTY bytes to the webview until EOF; when ssh asks for a password and
+    // one is stored, feed it over the PTY (never on argv). Injected at most once so a
+    // later in-session prompt (e.g. sudo) is never auto-filled with the SSH password.
     let app_handle = app.clone();
     let mut reader: Box<dyn Read + Send> = reader;
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
+        let mut tail: Vec<u8> = Vec::new();
+        let mut injected = password.is_none();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     if app_handle.emit(&event, buf[..n].to_vec()).is_err() {
                         break;
+                    }
+                    if !injected {
+                        tail.extend_from_slice(&buf[..n]);
+                        if tail.len() > 256 {
+                            let cut = tail.len() - 256;
+                            tail.drain(..cut);
+                        }
+                        let recent = String::from_utf8_lossy(&tail).to_lowercase();
+                        if recent.trim_end().ends_with("password:") {
+                            if let Some(pw) = &password {
+                                let _ = auth_writer.write_all(pw.as_bytes());
+                                let _ = auth_writer.write_all(b"\n");
+                                let _ = auth_writer.flush();
+                            }
+                            injected = true;
+                        }
                     }
                 }
             }
