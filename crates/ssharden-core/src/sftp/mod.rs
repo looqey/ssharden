@@ -30,8 +30,15 @@ fn sftp_err<E: std::fmt::Display>(e: E) -> CoreError {
     CoreError::Sftp(e.to_string())
 }
 
-/// russh client callback handler. Accepts the server key (TOFU) for now.
-struct ClientHandler;
+/// russh client callback handler. Verifies the server key against the user's
+/// `~/.ssh/known_hosts`: a known, matching key passes; a *changed* key is refused
+/// (possible MITM / key rotation); a genuinely new host is recorded on first use
+/// (trust-on-first-use), matching OpenSSH's `accept-new` behavior. This shares the
+/// same `known_hosts` file the interactive ssh/sftp CLI paths use.
+struct ClientHandler {
+    host: String,
+    port: u16,
+}
 
 #[async_trait::async_trait]
 impl client::Handler for ClientHandler {
@@ -39,10 +46,24 @@ impl client::Handler for ClientHandler {
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh::keys::key::PublicKey,
+        server_public_key: &russh::keys::key::PublicKey,
     ) -> std::result::Result<bool, Self::Error> {
-        // TODO(security): verify against ~/.ssh/known_hosts instead of trust-on-first-use.
-        Ok(true)
+        match russh::keys::check_known_hosts(&self.host, self.port, server_public_key) {
+            // Host is known and the key matches.
+            Ok(true) => Ok(true),
+            // Unknown host: record it (trust-on-first-use) and accept.
+            Ok(false) => {
+                let _ = russh::keys::learn_known_hosts(&self.host, self.port, server_public_key);
+                Ok(true)
+            }
+            // Host is known but presented a DIFFERENT key — refuse the connection.
+            Err(russh::keys::Error::KeyChanged { .. }) => Ok(false),
+            // No known_hosts file yet (or other read issue): treat as first contact.
+            Err(_) => {
+                let _ = russh::keys::learn_known_hosts(&self.host, self.port, server_public_key);
+                Ok(true)
+            }
+        }
     }
 }
 
@@ -57,7 +78,11 @@ impl SftpConn {
     /// Connect to `host:port` as `user` with password auth and open the SFTP subsystem.
     pub async fn connect(host: &str, port: u16, user: &str, password: &str) -> Result<SftpConn> {
         let config = Arc::new(client::Config::default());
-        let mut session = client::connect(config, (host, port), ClientHandler)
+        let handler = ClientHandler {
+            host: host.to_string(),
+            port,
+        };
+        let mut session = client::connect(config, (host, port), handler)
             .await
             .map_err(|e| CoreError::Sftp(format!("connect failed: {e}")))?;
 
