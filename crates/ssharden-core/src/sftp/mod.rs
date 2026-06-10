@@ -111,16 +111,24 @@ impl SftpConn {
         Ok(out)
     }
 
-    /// Download a remote file to a local path.
+    /// Download a remote file to a local path, streamed in fixed-size chunks so
+    /// memory use stays flat regardless of file size.
     pub async fn download(&self, remote: &str, local: &Path) -> Result<()> {
         let mut rf = self
             .sftp
             .open_with_flags(remote, OpenFlags::READ)
             .await
             .map_err(sftp_err)?;
-        let mut buf = Vec::new();
-        rf.read_to_end(&mut buf).await.map_err(sftp_err)?;
-        tokio::fs::write(local, &buf).await?;
+        let mut lf = tokio::fs::File::create(local).await?;
+        let mut buf = vec![0u8; 128 * 1024];
+        loop {
+            let n = rf.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            lf.write_all(&buf[..n]).await?;
+        }
+        lf.flush().await?;
         Ok(())
     }
 
@@ -143,9 +151,10 @@ impl SftpConn {
         }
     }
 
-    /// Upload a local file to a remote path.
+    /// Upload a local file to a remote path, streamed in fixed-size chunks so
+    /// memory use stays flat regardless of file size.
     pub async fn upload(&self, local: &Path, remote: &str) -> Result<()> {
-        let data = tokio::fs::read(local).await?;
+        let mut lf = tokio::fs::File::open(local).await?;
         let mut wf = self
             .sftp
             .open_with_flags(
@@ -154,9 +163,16 @@ impl SftpConn {
             )
             .await
             .map_err(sftp_err)?;
-        wf.write_all(&data).await.map_err(sftp_err)?;
-        wf.flush().await.map_err(sftp_err)?;
-        wf.shutdown().await.map_err(sftp_err)?;
+        let mut buf = vec![0u8; 128 * 1024];
+        loop {
+            let n = lf.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            wf.write_all(&buf[..n]).await?;
+        }
+        wf.flush().await?;
+        wf.shutdown().await?;
         Ok(())
     }
 }
