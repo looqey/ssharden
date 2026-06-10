@@ -31,4 +31,8 @@ pub enum CoreError {
     /// Failed to spawn a child process (`bw serve`, `ssh`, …).
     #[error("spawn error: {0}")]
     Spawn(String),
+
+    /// An SFTP transport/protocol error (russh / russh-sftp).
+    #[error("sftp error: {0}")]
+    Sftp(String),
 }

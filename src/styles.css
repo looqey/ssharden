@@ -462,3 +462,149 @@ button {
   font-family: ui-monospace, monospace;
   font-size: 0.85em;
 }
+
+/* ---------- SFTP dual-pane file browser ---------- */
+
+.fb-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.fb {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 1px;
+  background: var(--border);
+}
+
+.fb-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.fb-head {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.fb-title {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.fb-path {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.25rem 0.4rem;
+  color: var(--fg);
+  font-size: 0.8rem;
+  font-family: ui-monospace, monospace;
+}
+
+.fb-path:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.fb-up,
+.fb-refresh {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 0.2rem 0.45rem;
+}
+
+.fb-up:hover,
+.fb-refresh:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.fb-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.25rem;
+}
+
+.fb-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: 6px;
+}
+
+.fb-row.dir {
+  cursor: pointer;
+}
+
+.fb-row:hover {
+  background: var(--panel-2);
+}
+
+.fb-icon {
+  width: 1.2em;
+  text-align: center;
+}
+
+.fb-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fb-size {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.fb-xfer {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  border-radius: 6px;
+  padding: 0.15rem 0.45rem;
+  font-size: 0.75rem;
+  opacity: 0;
+}
+
+.fb-row:hover .fb-xfer {
+  opacity: 1;
+}
+
+.fb-xfer:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.fb-empty {
+  color: var(--muted);
+  padding: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.fb-status {
+  padding: 0.35rem 0.6rem;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.78rem;
+  min-height: 1.6em;
+}

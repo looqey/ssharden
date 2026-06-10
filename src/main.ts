@@ -17,16 +17,22 @@ import {
 import { renderHosts } from "./hosts";
 import { openHostForm } from "./form";
 import { TerminalSession } from "./terminal";
+import { SftpBrowser } from "./sftpui";
 
 const AUTO_LOCK_MS = 10 * 60 * 1000;
 
 let autoLockTimer: ReturnType<typeof setTimeout> | undefined;
 let unlocked = false;
 
+/** Anything that can live in a workspace tab (terminal or sftp browser). */
+interface PaneObj {
+  dispose(): void;
+  refit(): void;
+}
 interface Tab {
   id: string;
   title: string;
-  session: TerminalSession;
+  obj: PaneObj;
   pane: HTMLElement;
   tabButton: HTMLElement;
 }
@@ -144,7 +150,7 @@ async function loadHosts(): Promise<void> {
     const hosts: Host[] = await vaultListHosts();
     renderHosts(listEl, hosts, {
       onConnect: (h) => void openSession(h),
-      onSftp: (h) => void openSession(h, "sftp"),
+      onSftp: (h) => void openSftpBrowser(h),
       onEdit: (h) => void editHost(h),
       onDelete: (h) => void removeHost(h),
       onCopyPassword: (h) => void revealPassword(h),
@@ -261,9 +267,43 @@ async function openSession(host: Host, kind: "ssh" | "sftp" = "ssh"): Promise<vo
   tabButton.className = "tab";
   tabButton.innerHTML = `<span>${esc(label)}</span><span class="tab-close" title="Close">×</span>`;
 
-  const tab: Tab = { id: session.sessionId, title: label, session, pane, tabButton };
+  const tab: Tab = { id: session.sessionId, title: label, obj: session, pane, tabButton };
   tabs.push(tab);
 
+  tabButton.addEventListener("click", (ev) => {
+    if ((ev.target as HTMLElement).classList.contains("tab-close")) closeTab(tab);
+    else activateTab(tab);
+  });
+  tabstrip.appendChild(tabButton);
+  activateTab(tab);
+}
+
+async function openSftpBrowser(host: Host): Promise<void> {
+  resetAutoLock();
+  const terminals = document.querySelector<HTMLElement>("#terminals")!;
+  const tabstrip = document.querySelector<HTMLElement>("#tabstrip")!;
+  document.querySelector("#placeholder")?.remove();
+
+  const pane = document.createElement("div");
+  pane.className = "terminal-pane";
+  terminals.appendChild(pane);
+
+  let browser: SftpBrowser;
+  try {
+    browser = await SftpBrowser.open(pane, host.id);
+  } catch (e) {
+    pane.remove();
+    toast(`Could not open SFTP to ${host.name}: ${String(e)}`);
+    return;
+  }
+
+  const label = `sftp: ${host.name}`;
+  const tabButton = document.createElement("button");
+  tabButton.className = "tab";
+  tabButton.innerHTML = `<span>${esc(label)}</span><span class="tab-close" title="Close">×</span>`;
+
+  const tab: Tab = { id: browser.connId, title: label, obj: browser, pane, tabButton };
+  tabs.push(tab);
   tabButton.addEventListener("click", (ev) => {
     if ((ev.target as HTMLElement).classList.contains("tab-close")) closeTab(tab);
     else activateTab(tab);
@@ -278,11 +318,11 @@ function activateTab(tab: Tab): void {
     t.pane.classList.toggle("active", active);
     t.tabButton.classList.toggle("active", active);
   }
-  tab.session.refit();
+  tab.obj.refit();
 }
 
 function closeTab(tab: Tab): void {
-  tab.session.dispose();
+  tab.obj.dispose();
   tab.pane.remove();
   tab.tabButton.remove();
   const i = tabs.indexOf(tab);
@@ -293,7 +333,7 @@ function closeTab(tab: Tab): void {
 // ---------- Lock / auto-lock / toast ----------
 
 async function lock(): Promise<void> {
-  for (const t of tabs.splice(0)) t.session.dispose();
+  for (const t of tabs.splice(0)) t.obj.dispose();
   try {
     await vaultLock();
   } catch {

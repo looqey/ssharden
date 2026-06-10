@@ -15,7 +15,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
-use ssharden_core::{Host, HostInput, SshParams, SshSession, VaultClient};
+use ssharden_core::{FsEntry, Host, HostInput, SftpConn, SshParams, SshSession, VaultClient};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -36,7 +36,9 @@ struct AppState {
     /// Live SSH sessions keyed by session id. Sync mutex: only ever locked for
     /// non-`await` work (write/resize/insert).
     sessions: StdMutex<HashMap<String, LiveSession>>,
-    /// Monotonic counter for generating session ids.
+    /// Live SFTP connections keyed by conn id (for the file browser).
+    sftp_conns: AsyncMutex<HashMap<String, Arc<SftpConn>>>,
+    /// Monotonic counter for generating session/conn ids.
     next_id: AtomicU64,
 }
 
@@ -279,6 +281,130 @@ async fn ssh_resize(
     live.session.resize(cols, rows).map_err(e)
 }
 
+// ---------------- Graphical SFTP file browser ----------------
+
+/// Result of opening an SFTP connection: the conn id and the remote home path.
+#[derive(serde::Serialize)]
+struct SftpOpened {
+    conn_id: String,
+    home: String,
+}
+
+/// Open an SFTP connection to a host and return its id + remote home directory.
+#[tauri::command]
+async fn sftp_open(state: State<'_, AppState>, host_id: String) -> Result<SftpOpened, String> {
+    // Resolve host + password under the vault lock.
+    let (host, port, user, password) = {
+        let guard = state.vault.lock().await;
+        let client = guard.as_ref().ok_or("vault not started")?;
+        let hosts = client.list_hosts().await.map_err(e)?;
+        let h = hosts.into_iter().find(|h| h.id == host_id).ok_or("host not found")?;
+        let uri = h
+            .uris
+            .iter()
+            .find(|u| u.scheme == "ssh")
+            .ok_or("host has no ssh:// uri")?
+            .clone();
+        let password = client.host_password(&host_id).await.ok().flatten();
+        (
+            uri.host,
+            uri.port.unwrap_or(22),
+            uri.user.or(h.username).unwrap_or_default(),
+            password.unwrap_or_default(),
+        )
+    };
+
+    let conn = SftpConn::connect(&host, port, &user, &password)
+        .await
+        .map_err(e)?;
+    let home = conn.canonicalize(".").await.unwrap_or_else(|_| ".".to_string());
+
+    let conn_id = format!("f{}", state.next_id.fetch_add(1, Ordering::Relaxed));
+    state
+        .sftp_conns
+        .lock()
+        .await
+        .insert(conn_id.clone(), Arc::new(conn));
+    Ok(SftpOpened { conn_id, home })
+}
+
+/// Look up a live SFTP connection by id.
+async fn sftp_get_conn(state: &AppState, conn_id: &str) -> Result<Arc<SftpConn>, String> {
+    state
+        .sftp_conns
+        .lock()
+        .await
+        .get(conn_id)
+        .cloned()
+        .ok_or_else(|| "sftp connection not found".to_string())
+}
+
+/// List a remote directory.
+#[tauri::command]
+async fn sftp_ls(state: State<'_, AppState>, conn_id: String, path: String) -> Result<Vec<FsEntry>, String> {
+    let conn = sftp_get_conn(state.inner(), &conn_id).await?;
+    conn.list(&path).await.map_err(e)
+}
+
+/// Download a remote file to a local path.
+#[tauri::command]
+async fn sftp_get(
+    state: State<'_, AppState>,
+    conn_id: String,
+    remote: String,
+    local: String,
+) -> Result<(), String> {
+    let conn = sftp_get_conn(state.inner(), &conn_id).await?;
+    conn.download(&remote, std::path::Path::new(&local)).await.map_err(e)
+}
+
+/// Upload a local file to a remote path.
+#[tauri::command]
+async fn sftp_put(
+    state: State<'_, AppState>,
+    conn_id: String,
+    local: String,
+    remote: String,
+) -> Result<(), String> {
+    let conn = sftp_get_conn(state.inner(), &conn_id).await?;
+    conn.upload(std::path::Path::new(&local), &remote).await.map_err(e)
+}
+
+/// Close an SFTP connection.
+#[tauri::command]
+async fn sftp_close(state: State<'_, AppState>, conn_id: String) -> Result<(), String> {
+    state.sftp_conns.lock().await.remove(&conn_id);
+    Ok(())
+}
+
+/// The local home directory (starting point for the left pane).
+#[tauri::command]
+fn local_home() -> String {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| "/".to_string())
+}
+
+/// List a local directory (directories first).
+#[tauri::command]
+fn local_ls(path: String) -> Result<Vec<FsEntry>, String> {
+    let mut out = Vec::new();
+    let rd = std::fs::read_dir(&path).map_err(|e| e.to_string())?;
+    for entry in rd.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let md = entry.metadata().ok();
+        let is_dir = md.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+        let size = md.as_ref().map(|m| m.len()).unwrap_or(0);
+        out.push(FsEntry { name, is_dir, size });
+    }
+    out.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(out)
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
@@ -296,6 +422,13 @@ fn main() {
             sftp_connect,
             ssh_write,
             ssh_resize,
+            sftp_open,
+            sftp_ls,
+            sftp_get,
+            sftp_put,
+            sftp_close,
+            local_home,
+            local_ls,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
