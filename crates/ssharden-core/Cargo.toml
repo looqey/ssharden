@@ -1,0 +1,17 @@
+[package]
+name = "ssharden-core"
+description = "Pure-Rust core for ssharden: bw serve vault adapter, Host model, SSH PTY launcher"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+thiserror = { workspace = true }
+portable-pty = { workspace = true }
+reqwest = { workspace = true }

@@ -1,0 +1,197 @@
+// Prevents an extra console window on Windows in release.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+//! ssharden Tauri shell.
+//!
+//! Thin wrapper around `ssharden-core`: holds app state (the `VaultClient` and a
+//! registry of live SSH sessions) and exposes `#[tauri::command]`s that call core
+//! and forward PTY bytes to the webview as `ssh://{id}` events.
+//!
+//! Security: the vault session token never leaves Rust (it lives inside
+//! `VaultClient`); no secret is ever returned to JS or placed on argv.
+
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex as StdMutex;
+
+use ssharden_core::{Host, SshParams, SshSession, VaultClient};
+use tauri::{AppHandle, Emitter, State};
+use tokio::sync::Mutex as AsyncMutex;
+
+/// A live SSH session plus its PTY writer (kept so typed input never re-opens the pty).
+struct LiveSession {
+    session: SshSession,
+    writer: Box<dyn Write + Send>,
+}
+
+/// Managed application state.
+#[derive(Default)]
+struct AppState {
+    /// The vault adapter, present once `vault_start` has run. Async mutex: held across
+    /// `await` points while talking to `bw serve`.
+    vault: AsyncMutex<Option<VaultClient>>,
+    /// Live SSH sessions keyed by session id. Sync mutex: only ever locked for
+    /// non-`await` work (write/resize/insert).
+    sessions: StdMutex<HashMap<String, LiveSession>>,
+    /// Monotonic counter for generating session ids.
+    next_id: AtomicU64,
+}
+
+/// Map any core error to a user-facing string (never leaks secrets).
+fn e<T: std::fmt::Display>(err: T) -> String {
+    err.to_string()
+}
+
+/// Spawn `bw serve` on a loopback ephemeral port and store the client in state.
+#[tauri::command]
+async fn vault_start(state: State<'_, AppState>) -> Result<(), String> {
+    let mut guard = state.vault.lock().await;
+    if guard.is_some() {
+        return Ok(()); // already started
+    }
+    let client = VaultClient::start("bw").await.map_err(e)?;
+    *guard = Some(client);
+    Ok(())
+}
+
+/// Configure the server URL (if provided) and unlock the vault.
+///
+/// The master password flows webview → here once; the session token stays in Rust.
+#[tauri::command]
+async fn vault_unlock(
+    state: State<'_, AppState>,
+    server_url: String,
+    master_password: String,
+) -> Result<(), String> {
+    let mut guard = state.vault.lock().await;
+    let client = guard.as_mut().ok_or("vault not started")?;
+    // Best-effort: only effective before `bw login`; ignore when already logged in.
+    let _ = client.set_server(&server_url).await;
+    client.unlock(&master_password).await.map_err(e)
+}
+
+/// Lock the vault and zeroize the session token.
+#[tauri::command]
+async fn vault_lock(state: State<'_, AppState>) -> Result<(), String> {
+    let guard = state.vault.lock().await;
+    match guard.as_ref() {
+        Some(client) => client.lock().await.map_err(e),
+        None => Ok(()),
+    }
+}
+
+/// Sync, then list hosts parsed from Login items.
+#[tauri::command]
+async fn vault_list_hosts(state: State<'_, AppState>) -> Result<Vec<Host>, String> {
+    let guard = state.vault.lock().await;
+    let client = guard.as_ref().ok_or("vault not started")?;
+    client.list_hosts().await.map_err(e)
+}
+
+/// Resolve a host, spawn `ssh` in a PTY, stream stdout as `ssh://{id}` events.
+/// Returns the new session id.
+#[tauri::command]
+async fn ssh_connect(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    host_id: String,
+) -> Result<String, String> {
+    // Resolve the host and its ssh URI under the vault lock, then release it.
+    let params = {
+        let guard = state.vault.lock().await;
+        let client = guard.as_ref().ok_or("vault not started")?;
+        let hosts = client.list_hosts().await.map_err(e)?;
+        let host = hosts
+            .into_iter()
+            .find(|h| h.id == host_id)
+            .ok_or("host not found")?;
+        let uri = host
+            .uris
+            .iter()
+            .find(|u| u.scheme == "ssh")
+            .ok_or("host has no ssh:// uri")?
+            .clone();
+        SshParams {
+            host: uri.host,
+            port: uri.port.unwrap_or(22),
+            user: uri.user.or(host.username),
+            jump: host.fields.get("jump").cloned(),
+        }
+    };
+
+    // Spawn ssh in a PTY (sync; no locks held).
+    let mut session = SshSession::spawn(&params).map_err(e)?;
+    let reader = session.take_reader().ok_or("could not open pty reader")?;
+    let writer = session.writer().map_err(e)?;
+
+    let id = format!("s{}", state.next_id.fetch_add(1, Ordering::Relaxed));
+    let event = format!("ssh://{id}");
+
+    // Forward PTY bytes to the webview until EOF.
+    let app_handle = app.clone();
+    let mut reader: Box<dyn Read + Send> = reader;
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if app_handle.emit(&event, buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    state
+        .sessions
+        .lock()
+        .map_err(|_| "session registry poisoned")?
+        .insert(id.clone(), LiveSession { session, writer });
+
+    Ok(id)
+}
+
+/// Write bytes (including a typed password) to a session's PTY.
+#[tauri::command]
+async fn ssh_write(
+    state: State<'_, AppState>,
+    session_id: String,
+    data: Vec<u8>,
+) -> Result<(), String> {
+    let mut guard = state.sessions.lock().map_err(|_| "session registry poisoned")?;
+    let live = guard.get_mut(&session_id).ok_or("session not found")?;
+    live.writer.write_all(&data).map_err(e)?;
+    live.writer.flush().map_err(e)
+}
+
+/// Resize a session's PTY.
+#[tauri::command]
+async fn ssh_resize(
+    state: State<'_, AppState>,
+    session_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let guard = state.sessions.lock().map_err(|_| "session registry poisoned")?;
+    let live = guard.get(&session_id).ok_or("session not found")?;
+    live.session.resize(cols, rows).map_err(e)
+}
+
+fn main() {
+    tauri::Builder::default()
+        .manage(AppState::default())
+        .invoke_handler(tauri::generate_handler![
+            vault_start,
+            vault_unlock,
+            vault_lock,
+            vault_list_hosts,
+            ssh_connect,
+            ssh_write,
+            ssh_resize,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
