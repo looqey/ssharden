@@ -14,4 +14,4 @@ pub use error::{CoreError, Result};
 pub use sftp::{FsEntry, SftpConn};
 pub use ssh::{SshParams, SshSession};
 pub use vault::model::{AccountStatus, Host, HostInput, HostUri};
-pub use vault::{account_status, VaultClient};
+pub use vault::{account_status, resolve_bw, VaultClient};

@@ -54,7 +54,9 @@ async fn vault_start(state: State<'_, AppState>) -> Result<(), String> {
     if guard.is_some() {
         return Ok(()); // already started
     }
-    let client = VaultClient::start("bw").await.map_err(e)?;
+    let client = VaultClient::start(&ssharden_core::resolve_bw())
+        .await
+        .map_err(e)?;
     *guard = Some(client);
     Ok(())
 }
@@ -88,7 +90,9 @@ async fn vault_lock(state: State<'_, AppState>) -> Result<(), String> {
 /// Which `bw` account is logged in (for the unlock screen). Does not need `bw serve`.
 #[tauri::command]
 async fn account_status() -> Result<ssharden_core::AccountStatus, String> {
-    ssharden_core::account_status("bw").await.map_err(e)
+    ssharden_core::account_status(&ssharden_core::resolve_bw())
+        .await
+        .map_err(e)
 }
 
 /// Sync, then list hosts parsed from Login items.

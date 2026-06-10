@@ -18,7 +18,7 @@ pub use model::{
 ///
 /// Used to show which account a user is unlocking before the vault is started.
 pub async fn account_status(bw_bin: &str) -> Result<AccountStatus> {
-    let out = tokio::process::Command::new(bw_bin)
+    let out = bw_command(bw_bin)
         .arg("status")
         .output()
         .await
@@ -50,6 +50,8 @@ pub struct VaultClient {
     child: Option<tokio::process::Child>,
     /// Session token from `/unlock`. Stays in Rust memory only; never logged.
     session: Option<String>,
+    /// Resolved absolute path to the `bw` binary (used for `bw config server`).
+    bw_bin: String,
 }
 
 /// Reserve an ephemeral TCP port on loopback, then release it for `bw serve` to bind.
@@ -73,6 +75,89 @@ fn check_success(body: &serde_json::Value) -> Result<()> {
     }
 }
 
+/// Candidate executable names for the Bitwarden CLI per platform.
+#[cfg(windows)]
+const BW_NAMES: &[&str] = &["bw.exe", "bw.cmd", "bw"];
+#[cfg(not(windows))]
+const BW_NAMES: &[&str] = &["bw"];
+
+/// Resolve the Bitwarden CLI to an absolute path.
+///
+/// Desktop launchers (a `.desktop` file from the `.deb`, the dock, etc.) start the app
+/// with a minimal `PATH` that usually omits nvm / npm-global / bun bin dirs, so a bare
+/// `Command::new("bw")` fails with "No such file or directory". Check an explicit
+/// override, then `PATH`, then the common install locations.
+pub fn resolve_bw() -> String {
+    use std::path::PathBuf;
+
+    if let Ok(p) = std::env::var("SSHARDEN_BW") {
+        if !p.is_empty() && PathBuf::from(&p).is_file() {
+            return p;
+        }
+    }
+
+    let try_dir = |dir: PathBuf| -> Option<String> {
+        for name in BW_NAMES {
+            let c = dir.join(name);
+            if c.is_file() {
+                return Some(c.to_string_lossy().into_owned());
+            }
+        }
+        None
+    };
+
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            if let Some(found) = try_dir(dir) {
+                return found;
+            }
+        }
+    }
+
+    let mut dirs: Vec<PathBuf> =
+        ["/usr/local/bin", "/usr/bin", "/bin", "/opt/homebrew/bin", "/snap/bin"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+    if let Ok(home) = std::env::var("HOME") {
+        let home = PathBuf::from(home);
+        dirs.push(home.join(".local/bin"));
+        dirs.push(home.join(".bun/bin"));
+        // nvm installs node (and npm-global bins) under ~/.nvm/versions/node/<ver>/bin
+        if let Ok(entries) = std::fs::read_dir(home.join(".nvm/versions/node")) {
+            for e in entries.flatten() {
+                dirs.push(e.path().join("bin"));
+            }
+        }
+    }
+    for d in dirs {
+        if let Some(found) = try_dir(d) {
+            return found;
+        }
+    }
+
+    BW_NAMES[0].to_string() // fallback: let the OS surface the error if truly missing
+}
+
+/// Build a `Command` for the `bw` binary with its own directory prepended to `PATH`,
+/// so the Node interpreter `bw`'s shebang needs (`#!/usr/bin/env node`) resolves even
+/// under a minimal desktop-launch environment.
+fn bw_command(bw_bin: &str) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(bw_bin);
+    if let Some(dir) = std::path::Path::new(bw_bin).parent() {
+        if !dir.as_os_str().is_empty() {
+            let mut paths = vec![dir.to_path_buf()];
+            if let Some(existing) = std::env::var_os("PATH") {
+                paths.extend(std::env::split_paths(&existing));
+            }
+            if let Ok(joined) = std::env::join_paths(paths) {
+                cmd.env("PATH", joined);
+            }
+        }
+    }
+    cmd
+}
+
 impl VaultClient {
     /// Spawn `bw serve` on `127.0.0.1:<ephemeral>` and return a ready client.
     ///
@@ -83,7 +168,7 @@ impl VaultClient {
         let port = pick_loopback_port()?;
         let base_url = format!("http://127.0.0.1:{port}");
 
-        let mut cmd = tokio::process::Command::new(bw_bin);
+        let mut cmd = bw_command(bw_bin);
         cmd.args(["serve", "--hostname", "127.0.0.1", "--port", &port.to_string()])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -152,6 +237,7 @@ impl VaultClient {
             http,
             child: Some(child),
             session: None,
+            bw_bin: bw_bin.to_string(),
         })
     }
 
@@ -163,7 +249,7 @@ impl VaultClient {
         if url.trim().is_empty() {
             return Ok(());
         }
-        let out = tokio::process::Command::new("bw")
+        let out = bw_command(&self.bw_bin)
             .args(["config", "server", url])
             .output()
             .await
@@ -304,6 +390,17 @@ impl VaultClient {
         } else {
             Err(CoreError::Bw(format!("delete failed ({status}): {}", text.trim())))
         }
+    }
+
+    /// Fetch the private key of a Bitwarden SSH Key item (type 5) by id, if present.
+    pub async fn ssh_private_key(&self, item_id: &str) -> Result<Option<String>> {
+        let item = self.get_item(item_id).await?;
+        Ok(item
+            .get("sshKey")
+            .and_then(|k| k.get("privateKey"))
+            .and_then(|p| p.as_str())
+            .filter(|p| !p.is_empty())
+            .map(str::to_string))
     }
 
     /// Fetch just the (decrypted) password for a host, for copy/reveal.
