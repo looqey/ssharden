@@ -139,6 +139,48 @@ async fn host_password(state: State<'_, AppState>, id: String) -> Result<Option<
     client.host_password(&id).await.map_err(e)
 }
 
+/// A vault folder (group).
+#[derive(serde::Serialize)]
+struct Folder {
+    id: String,
+    name: String,
+}
+
+/// List vault folders (for the picker / manager), sorted by name.
+#[tauri::command]
+async fn vault_folders(state: State<'_, AppState>) -> Result<Vec<Folder>, String> {
+    let guard = state.vault.lock().await;
+    let client = guard.as_ref().ok_or("vault not started")?;
+    let map = client.list_folders().await.map_err(e)?;
+    let mut v: Vec<Folder> = map.into_iter().map(|(id, name)| Folder { id, name }).collect();
+    v.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(v)
+}
+
+/// Create a vault folder.
+#[tauri::command]
+async fn folder_create(state: State<'_, AppState>, name: String) -> Result<(), String> {
+    let guard = state.vault.lock().await;
+    let client = guard.as_ref().ok_or("vault not started")?;
+    client.folder_create(&name).await.map_err(e)
+}
+
+/// Rename a vault folder.
+#[tauri::command]
+async fn folder_rename(state: State<'_, AppState>, id: String, name: String) -> Result<(), String> {
+    let guard = state.vault.lock().await;
+    let client = guard.as_ref().ok_or("vault not started")?;
+    client.folder_rename(&id, &name).await.map_err(e)
+}
+
+/// Delete a vault folder (its items become unfiled).
+#[tauri::command]
+async fn folder_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let guard = state.vault.lock().await;
+    let client = guard.as_ref().ok_or("vault not started")?;
+    client.folder_delete(&id).await.map_err(e)
+}
+
 /// Write a private key to a locked-down (0600 on unix) temp file for `ssh -i`,
 /// ensuring a trailing newline. Returns the path; the caller deletes it when done.
 fn write_temp_key(id: &str, private_key: &str) -> std::io::Result<std::path::PathBuf> {
@@ -583,6 +625,10 @@ fn main() {
             host_update,
             host_delete,
             host_password,
+            vault_folders,
+            folder_create,
+            folder_rename,
+            folder_delete,
             ssh_connect,
             sftp_connect,
             ssh_write,

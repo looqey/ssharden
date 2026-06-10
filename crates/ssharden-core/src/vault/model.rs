@@ -214,8 +214,12 @@ pub fn login_cipher_json(input: &HostInput, base: Option<&serde_json::Value>) ->
     };
 
     let folder_id = match &input.folder_id {
+        // Explicit folder selected in the form.
         Some(f) if !f.is_empty() => json!(f),
-        _ => base
+        // Explicit "No folder" (empty string from the picker).
+        Some(_) => json!(null),
+        // Unspecified by the caller: keep whatever the item already had.
+        None => base
             .and_then(|b| b.get("folderId"))
             .cloned()
             .unwrap_or(json!(null)),

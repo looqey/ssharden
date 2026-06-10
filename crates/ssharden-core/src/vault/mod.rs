@@ -378,6 +378,53 @@ impl VaultClient {
         body.get("data").cloned().ok_or(CoreError::NotFound)
     }
 
+    /// Create a vault folder.
+    pub async fn folder_create(&self, name: &str) -> Result<()> {
+        let body = self
+            .http
+            .post(format!("{}/object/folder", self.base_url))
+            .json(&serde_json::json!({ "name": name }))
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+        check_success(&body)
+    }
+
+    /// Rename a vault folder.
+    pub async fn folder_rename(&self, id: &str, name: &str) -> Result<()> {
+        let body = self
+            .http
+            .put(format!("{}/object/folder/{id}", self.base_url))
+            .json(&serde_json::json!({ "name": name }))
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+        check_success(&body)
+    }
+
+    /// Delete a vault folder (its items become unfiled).
+    pub async fn folder_delete(&self, id: &str) -> Result<()> {
+        let resp = self
+            .http
+            .delete(format!("{}/object/folder/{id}", self.base_url))
+            .send()
+            .await?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if status.is_success() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                if v.get("success").and_then(|s| s.as_bool()) == Some(false) {
+                    return check_success(&v);
+                }
+            }
+            Ok(())
+        } else {
+            Err(CoreError::Bw(format!("delete failed ({status}): {}", text.trim())))
+        }
+    }
+
     /// Create a new host (Login item) from user input.
     pub async fn create_host(&self, input: &HostInput) -> Result<()> {
         let cipher = login_cipher_json(input, None);

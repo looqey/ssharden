@@ -1,6 +1,6 @@
 // Host create/edit form — a modal overlay that resolves to a HostInput (or null).
 
-import type { Host, HostInput } from "./vault";
+import type { Folder, Host, HostInput } from "./vault";
 
 export interface HostFormResult {
   /** Present when editing an existing host. */
@@ -16,7 +16,10 @@ const DEFAULT_PORTS: Record<string, number> = { ssh: 22, sftp: 22, rdp: 3389, ft
  * When `existing` is given, the form is prefilled for editing (password left blank
  * to mean "keep current").
  */
-export function openHostForm(existing?: Host): Promise<HostFormResult | null> {
+export function openHostForm(
+  existing?: Host,
+  folders: Folder[] = [],
+): Promise<HostFormResult | null> {
   return new Promise((resolve) => {
     const primary = existing?.uris[0];
     const proto0 = primary?.scheme ?? "ssh";
@@ -47,6 +50,17 @@ export function openHostForm(existing?: Host): Promise<HostFormResult | null> {
         </label>
         <label>Jump host <span class="optional">(ssh -J, optional)</span>
           <input id="f-jump" value="${esc(jump0)}" autocomplete="off">
+        </label>
+        <label>Folder
+          <select id="f-folder">
+            <option value="">No folder</option>
+            ${folders
+              .map(
+                (f) =>
+                  `<option value="${esc(f.id)}"${existing?.folder_id === f.id ? " selected" : ""}>${esc(f.name)}</option>`,
+              )
+              .join("")}
+          </select>
         </label>
         <p class="error" id="f-error"></p>
         <div class="modal-actions">
@@ -101,6 +115,8 @@ export function openHostForm(existing?: Host): Promise<HostFormResult | null> {
 
       const input: HostInput = {
         name,
+        // Always send the picker's choice: a folder id, or "" for "No folder".
+        folder_id: $<HTMLSelectElement>("#f-folder").value,
         username: user || null,
         password: pass ? pass : null, // blank = keep current (edit) / none (create)
         uris: [uri],

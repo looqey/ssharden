@@ -92,3 +92,29 @@ export async function hostPassword(id: string): Promise<string | null> {
 export async function rdpLaunch(hostId: string): Promise<void> {
   return invoke("rdp_launch", { hostId });
 }
+
+/** A vault folder (group). */
+export interface Folder {
+  id: string;
+  name: string;
+}
+
+/** List vault folders, sorted by name. */
+export async function vaultFolders(): Promise<Folder[]> {
+  return invoke("vault_folders");
+}
+
+/** Create a vault folder. */
+export async function folderCreate(name: string): Promise<void> {
+  return invoke("folder_create", { name });
+}
+
+/** Rename a vault folder. */
+export async function folderRename(id: string, name: string): Promise<void> {
+  return invoke("folder_rename", { id, name });
+}
+
+/** Delete a vault folder (its items become unfiled). */
+export async function folderDelete(id: string): Promise<void> {
+  return invoke("folder_delete", { id });
+}

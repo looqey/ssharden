@@ -13,10 +13,13 @@ import {
   hostDelete,
   hostPassword,
   rdpLaunch,
+  vaultFolders,
   type Host,
+  type Folder,
 } from "./vault";
 import { renderHosts } from "./hosts";
 import { openHostForm } from "./form";
+import { openFolderManager } from "./folders";
 import { TerminalSession } from "./terminal";
 import { SftpBrowser } from "./sftpui";
 
@@ -38,6 +41,9 @@ interface Tab {
   tabButton: HTMLElement;
 }
 const tabs: Tab[] = [];
+
+/** Folders cached from the last host load, for the host form's picker. */
+let currentFolders: Folder[] = [];
 
 function root(): HTMLDivElement {
   const app = document.querySelector<HTMLDivElement>("#app");
@@ -127,6 +133,7 @@ async function showApp(): Promise<void> {
         </div>
         <div class="host-list-head">
           <button id="new-host" class="newbtn">+ New host</button>
+          <button id="manage-folders" class="ghost" title="Manage folders">Folders</button>
         </div>
         <div class="host-list" id="host-list"><p class="hosts-empty">Loading…</p></div>
       </aside>
@@ -140,6 +147,9 @@ async function showApp(): Promise<void> {
 
   app.querySelector<HTMLButtonElement>("#lock-btn")!.addEventListener("click", () => void lock());
   app.querySelector<HTMLButtonElement>("#new-host")!.addEventListener("click", () => void newHost());
+  app.querySelector<HTMLButtonElement>("#manage-folders")!.addEventListener("click", () => {
+    void openFolderManager(toast).then(() => loadHosts());
+  });
 
   await loadHosts();
 }
@@ -148,6 +158,7 @@ async function loadHosts(): Promise<void> {
   const listEl = document.querySelector<HTMLElement>("#host-list");
   if (!listEl) return;
   try {
+    currentFolders = await vaultFolders().catch(() => []);
     const hosts: Host[] = await vaultListHosts();
     renderHosts(listEl, hosts, {
       onConnect: (h) => void openSession(h),
@@ -166,7 +177,7 @@ async function loadHosts(): Promise<void> {
 
 async function newHost(): Promise<void> {
   resetAutoLock();
-  const res = await openHostForm();
+  const res = await openHostForm(undefined, currentFolders);
   if (!res) return;
   try {
     await hostCreate(res.input);
@@ -190,7 +201,7 @@ async function launchRdp(host: Host): Promise<void> {
 
 async function editHost(h: Host): Promise<void> {
   resetAutoLock();
-  const res = await openHostForm(h);
+  const res = await openHostForm(h, currentFolders);
   if (!res || !res.id) return;
   try {
     await hostUpdate(res.id, res.input);
