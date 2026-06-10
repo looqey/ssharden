@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex as StdMutex;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use ssharden_core::{Host, HostInput, SshParams, SshSession, VaultClient};
 use tauri::{AppHandle, Emitter, State};
@@ -22,7 +22,9 @@ use tokio::sync::Mutex as AsyncMutex;
 /// A live SSH session plus its PTY writer (kept so typed input never re-opens the pty).
 struct LiveSession {
     session: SshSession,
-    writer: Box<dyn Write + Send>,
+    /// Single PTY writer (portable-pty allows only one), shared between typed input
+    /// and the auto-auth injector.
+    writer: Arc<StdMutex<Box<dyn Write + Send>>>,
 }
 
 /// Managed application state.
@@ -170,9 +172,9 @@ async fn ssh_connect(
     // Spawn ssh in a PTY (sync; no locks held).
     let mut session = SshSession::spawn(&params).map_err(e)?;
     let reader = session.take_reader().ok_or("could not open pty reader")?;
-    let writer = session.writer().map_err(e)?;
-    // A second writer for auto-auth injection (independent dup of the pty fd).
-    let mut auth_writer = session.writer().map_err(e)?;
+    // One writer, shared (portable-pty only allows a single take_writer).
+    let writer = Arc::new(StdMutex::new(session.writer().map_err(e)?));
+    let auth_writer = Arc::clone(&writer);
 
     let id = format!("s{}", state.next_id.fetch_add(1, Ordering::Relaxed));
     let event = format!("ssh://{id}");
@@ -202,9 +204,11 @@ async fn ssh_connect(
                         let recent = String::from_utf8_lossy(&tail).to_lowercase();
                         if recent.trim_end().ends_with("password:") {
                             if let Some(pw) = &password {
-                                let _ = auth_writer.write_all(pw.as_bytes());
-                                let _ = auth_writer.write_all(b"\n");
-                                let _ = auth_writer.flush();
+                                if let Ok(mut w) = auth_writer.lock() {
+                                    let _ = w.write_all(pw.as_bytes());
+                                    let _ = w.write_all(b"\n");
+                                    let _ = w.flush();
+                                }
                             }
                             injected = true;
                         }
@@ -230,10 +234,11 @@ async fn ssh_write(
     session_id: String,
     data: Vec<u8>,
 ) -> Result<(), String> {
-    let mut guard = state.sessions.lock().map_err(|_| "session registry poisoned")?;
-    let live = guard.get_mut(&session_id).ok_or("session not found")?;
-    live.writer.write_all(&data).map_err(e)?;
-    live.writer.flush().map_err(e)
+    let guard = state.sessions.lock().map_err(|_| "session registry poisoned")?;
+    let live = guard.get(&session_id).ok_or("session not found")?;
+    let mut w = live.writer.lock().map_err(|_| "pty writer poisoned")?;
+    w.write_all(&data).map_err(e)?;
+    w.flush().map_err(e)
 }
 
 /// Resize a session's PTY.
