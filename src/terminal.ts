@@ -28,12 +28,14 @@ export class TerminalSession {
     this.term.loadAddon(this.fit);
   }
 
-  /** Connect to `hostId`, mount an xterm into `mount`, and stream the PTY. */
+  /** Connect to `hostId` (ssh or sftp), mount an xterm into `mount`, stream the PTY. */
   static async connect(
     mount: HTMLElement,
     hostId: string,
+    kind: "ssh" | "sftp" = "ssh",
   ): Promise<TerminalSession> {
-    const sessionId = await invoke<string>("ssh_connect", { hostId });
+    const cmd = kind === "sftp" ? "sftp_connect" : "ssh_connect";
+    const sessionId = await invoke<string>(cmd, { hostId });
     const s = new TerminalSession(sessionId);
 
     s.term.open(mount);

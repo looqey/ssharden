@@ -144,6 +144,7 @@ async function loadHosts(): Promise<void> {
     const hosts: Host[] = await vaultListHosts();
     renderHosts(listEl, hosts, {
       onConnect: (h) => void openSession(h),
+      onSftp: (h) => void openSession(h, "sftp"),
       onEdit: (h) => void editHost(h),
       onDelete: (h) => void removeHost(h),
       onCopyPassword: (h) => void revealPassword(h),
@@ -236,7 +237,7 @@ async function revealPassword(h: Host): Promise<void> {
 
 // ---------- Terminal tabs ----------
 
-async function openSession(host: Host): Promise<void> {
+async function openSession(host: Host, kind: "ssh" | "sftp" = "ssh"): Promise<void> {
   resetAutoLock();
   const terminals = document.querySelector<HTMLElement>("#terminals")!;
   const tabstrip = document.querySelector<HTMLElement>("#tabstrip")!;
@@ -248,18 +249,19 @@ async function openSession(host: Host): Promise<void> {
 
   let session: TerminalSession;
   try {
-    session = await TerminalSession.connect(pane, host.id);
+    session = await TerminalSession.connect(pane, host.id, kind);
   } catch (e) {
     pane.remove();
-    toast(`Could not connect to ${host.name}: ${String(e)}`);
+    toast(`Could not ${kind} to ${host.name}: ${String(e)}`);
     return;
   }
 
+  const label = kind === "sftp" ? `sftp: ${host.name}` : host.name;
   const tabButton = document.createElement("button");
   tabButton.className = "tab";
-  tabButton.innerHTML = `<span>${esc(host.name)}</span><span class="tab-close" title="Close">×</span>`;
+  tabButton.innerHTML = `<span>${esc(label)}</span><span class="tab-close" title="Close">×</span>`;
 
-  const tab: Tab = { id: session.sessionId, title: host.name, session, pane, tabButton };
+  const tab: Tab = { id: session.sessionId, title: label, session, pane, tabButton };
   tabs.push(tab);
 
   tabButton.addEventListener("click", (ev) => {

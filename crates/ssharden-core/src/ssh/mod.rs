@@ -37,6 +37,21 @@ impl SshSession {
     ///
     /// Never places a secret on argv; host-key checking is never disabled.
     pub fn spawn(p: &SshParams) -> Result<SshSession> {
+        // ssh uses lowercase -p for the port.
+        Self::spawn_program("ssh", "-p", p)
+    }
+
+    /// Spawn an interactive `sftp` session to the same target, in a PTY.
+    ///
+    /// Reuses the SSH host's params (port, user, jump); auth (key/agent/password)
+    /// works exactly as for `ssh`.
+    pub fn spawn_sftp(p: &SshParams) -> Result<SshSession> {
+        // sftp uses uppercase -P for the port.
+        Self::spawn_program("sftp", "-P", p)
+    }
+
+    /// Shared launcher for the `ssh`/`sftp` family. `port_flag` is `-p` (ssh) or `-P` (sftp).
+    fn spawn_program(program: &str, port_flag: &str, p: &SshParams) -> Result<SshSession> {
         let pty = native_pty_system();
         let pair = pty
             .openpty(PtySize {
@@ -47,8 +62,8 @@ impl SshSession {
             })
             .map_err(|e| CoreError::Spawn(format!("openpty failed: {e}")))?;
 
-        let mut cmd = CommandBuilder::new("ssh");
-        cmd.arg("-p");
+        let mut cmd = CommandBuilder::new(program);
+        cmd.arg(port_flag);
         cmd.arg(p.port.to_string());
         if let Some(jump) = &p.jump {
             if !jump.trim().is_empty() {
@@ -65,9 +80,9 @@ impl SshSession {
         let child: Box<dyn Child + Send> = pair
             .slave
             .spawn_command(cmd)
-            .map_err(|e| CoreError::Spawn(format!("failed to spawn ssh: {e}")))?;
+            .map_err(|e| CoreError::Spawn(format!("failed to spawn {program}: {e}")))?;
 
-        // Drop the slave so the master observes EOF when ssh exits.
+        // Drop the slave so the master observes EOF when the child exits.
         drop(pair.slave);
 
         Ok(SshSession {

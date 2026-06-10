@@ -133,13 +133,13 @@ async fn host_password(state: State<'_, AppState>, id: String) -> Result<Option<
     client.host_password(&id).await.map_err(e)
 }
 
-/// Resolve a host, spawn `ssh` in a PTY, stream stdout as `ssh://{id}` events.
-/// Returns the new session id.
-#[tauri::command]
-async fn ssh_connect(
+/// Resolve a host and open `ssh` or `sftp` to it in a PTY, streaming output as
+/// `ssh://{id}` events. Shared by the ssh_connect/sftp_connect commands.
+async fn open_session(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: &AppState,
     host_id: String,
+    sftp: bool,
 ) -> Result<String, String> {
     // Resolve the host (and its stored password) under the vault lock, then release it.
     let (params, password) = {
@@ -169,8 +169,13 @@ async fn ssh_connect(
         )
     };
 
-    // Spawn ssh in a PTY (sync; no locks held).
-    let mut session = SshSession::spawn(&params).map_err(e)?;
+    // Spawn ssh or sftp in a PTY (sync; no locks held).
+    let mut session = if sftp {
+        SshSession::spawn_sftp(&params)
+    } else {
+        SshSession::spawn(&params)
+    }
+    .map_err(e)?;
     let reader = session.take_reader().ok_or("could not open pty reader")?;
     // One writer, shared (portable-pty only allows a single take_writer).
     let writer = Arc::new(StdMutex::new(session.writer().map_err(e)?));
@@ -227,6 +232,26 @@ async fn ssh_connect(
     Ok(id)
 }
 
+/// Resolve a host, spawn `ssh` in a PTY, stream output as `ssh://{id}` events.
+#[tauri::command]
+async fn ssh_connect(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    host_id: String,
+) -> Result<String, String> {
+    open_session(app, state.inner(), host_id, false).await
+}
+
+/// Resolve a host, spawn `sftp` to it in a PTY, stream output as `ssh://{id}` events.
+#[tauri::command]
+async fn sftp_connect(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    host_id: String,
+) -> Result<String, String> {
+    open_session(app, state.inner(), host_id, true).await
+}
+
 /// Write bytes (including a typed password) to a session's PTY.
 #[tauri::command]
 async fn ssh_write(
@@ -268,6 +293,7 @@ fn main() {
             host_delete,
             host_password,
             ssh_connect,
+            sftp_connect,
             ssh_write,
             ssh_resize,
         ])

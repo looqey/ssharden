@@ -6,6 +6,7 @@ import type { Host } from "./vault";
 /** Actions wired to each host row. */
 export interface HostActions {
   onConnect: (host: Host) => void;
+  onSftp: (host: Host) => void;
   onEdit: (host: Host) => void;
   onDelete: (host: Host) => void;
   onCopyPassword: (host: Host) => void;
@@ -77,6 +78,7 @@ export function renderHosts(
 
       const acts = document.createElement("div");
       acts.className = "host-actions";
+      acts.appendChild(iconBtn("⇅", "Open SFTP", () => actions.onSftp(h)));
       acts.appendChild(iconBtn("⧉", "Copy password", () => actions.onCopyPassword(h)));
       acts.appendChild(iconBtn("✎", "Edit", () => actions.onEdit(h)));
       acts.appendChild(iconBtn("🗑", "Delete", () => actions.onDelete(h)));
