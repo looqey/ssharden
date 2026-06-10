@@ -55,27 +55,47 @@ impl VaultClient {
     ///
     /// `bw_bin` is the path to the `bw` executable. Never binds `0.0.0.0`.
     pub async fn start(bw_bin: &str) -> Result<VaultClient> {
+        use tokio::io::AsyncReadExt;
+
         let port = pick_loopback_port()?;
         let base_url = format!("http://127.0.0.1:{port}");
 
-        let child = tokio::process::Command::new(bw_bin)
+        let mut child = tokio::process::Command::new(bw_bin)
             .args(["serve", "--hostname", "127.0.0.1", "--port", &port.to_string()])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| CoreError::Spawn(format!("failed to spawn `{bw_bin} serve`: {e}")))?;
+
+        let mut stderr = child.stderr.take();
 
         let http = reqwest::Client::builder()
             .no_proxy()
             .build()
             .map_err(CoreError::Http)?;
 
-        // Poll /status until bw serve is accepting connections (~10s budget).
+        // Poll /status until bw serve accepts connections (~10s budget), but fail
+        // fast with a helpful message if the process exits first. The most common
+        // cause is that the Bitwarden CLI is not logged in (`bw serve` then prints
+        // "You are not logged in." and exits immediately).
         let status_url = format!("{base_url}/status");
         let mut ready = false;
         for _ in 0..50 {
+            if let Some(status) = child.try_wait()? {
+                let mut msg = String::new();
+                if let Some(mut err) = stderr.take() {
+                    let _ = err.read_to_string(&mut msg).await;
+                }
+                let msg = msg.trim();
+                let hint = if msg.to_lowercase().contains("not logged in") {
+                    " — log in first: `bw config server <url>` (self-hosted) then `bw login`"
+                } else {
+                    ""
+                };
+                return Err(CoreError::Bw(format!("bw serve exited ({status}): {msg}{hint}")));
+            }
             if http.get(&status_url).send().await.is_ok() {
                 ready = true;
                 break;
