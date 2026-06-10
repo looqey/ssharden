@@ -646,3 +646,110 @@ button {
   color: var(--fg);
   background: var(--bg);
 }
+
+/* ---------- SFTP transfer queue ---------- */
+
+.fb-bottom {
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.fb-queue {
+  max-height: 9rem;
+  overflow-y: auto;
+}
+
+.fb-queue:empty {
+  display: none;
+}
+
+.xf-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.25rem 0.6rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.xf-clear {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 5px;
+  padding: 0.05rem 0.4rem;
+  font-size: 0.7rem;
+  text-transform: none;
+}
+
+.xf-clear:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.xf-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.8rem;
+}
+
+.xf-arrow {
+  color: var(--accent);
+  width: 1em;
+  text-align: center;
+}
+
+.xf-name {
+  flex: 0 0 11rem;
+  max-width: 11rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xf-bar {
+  flex: 1;
+  height: 6px;
+  background: var(--panel-2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.xf-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.12s linear;
+}
+
+.xf-right {
+  flex: 0 0 auto;
+  min-width: 6rem;
+  text-align: right;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.xf-row.done .xf-fill {
+  background: #4caf7d;
+}
+
+.xf-row.done .xf-right {
+  color: #4caf7d;
+}
+
+.xf-row.error .xf-fill {
+  background: var(--danger);
+}
+
+.xf-row.error .xf-right {
+  color: var(--danger);
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

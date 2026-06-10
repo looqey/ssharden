@@ -112,8 +112,21 @@ impl SftpConn {
     }
 
     /// Download a remote file to a local path, streamed in fixed-size chunks so
-    /// memory use stays flat regardless of file size.
-    pub async fn download(&self, remote: &str, local: &Path) -> Result<()> {
+    /// memory use stays flat regardless of file size. `on_progress(done, total)`
+    /// is called as bytes arrive (`total` is 0 if the size is unknown).
+    pub async fn download<F: FnMut(u64, u64)>(
+        &self,
+        remote: &str,
+        local: &Path,
+        mut on_progress: F,
+    ) -> Result<()> {
+        let total = self
+            .sftp
+            .metadata(remote)
+            .await
+            .map_err(sftp_err)?
+            .size
+            .unwrap_or(0);
         let mut rf = self
             .sftp
             .open_with_flags(remote, OpenFlags::READ)
@@ -121,14 +134,19 @@ impl SftpConn {
             .map_err(sftp_err)?;
         let mut lf = tokio::fs::File::create(local).await?;
         let mut buf = vec![0u8; 128 * 1024];
+        let mut transferred = 0u64;
+        on_progress(0, total);
         loop {
             let n = rf.read(&mut buf).await?;
             if n == 0 {
                 break;
             }
             lf.write_all(&buf[..n]).await?;
+            transferred += n as u64;
+            on_progress(transferred, total);
         }
         lf.flush().await?;
+        on_progress(transferred, transferred.max(total));
         Ok(())
     }
 
@@ -152,8 +170,15 @@ impl SftpConn {
     }
 
     /// Upload a local file to a remote path, streamed in fixed-size chunks so
-    /// memory use stays flat regardless of file size.
-    pub async fn upload(&self, local: &Path, remote: &str) -> Result<()> {
+    /// memory use stays flat regardless of file size. `on_progress(done, total)`
+    /// is called as bytes are sent.
+    pub async fn upload<F: FnMut(u64, u64)>(
+        &self,
+        local: &Path,
+        remote: &str,
+        mut on_progress: F,
+    ) -> Result<()> {
+        let total = tokio::fs::metadata(local).await?.len();
         let mut lf = tokio::fs::File::open(local).await?;
         let mut wf = self
             .sftp
@@ -164,15 +189,20 @@ impl SftpConn {
             .await
             .map_err(sftp_err)?;
         let mut buf = vec![0u8; 128 * 1024];
+        let mut transferred = 0u64;
+        on_progress(0, total);
         loop {
             let n = lf.read(&mut buf).await?;
             if n == 0 {
                 break;
             }
             wf.write_all(&buf[..n]).await?;
+            transferred += n as u64;
+            on_progress(transferred, total);
         }
         wf.flush().await?;
         wf.shutdown().await?;
+        on_progress(transferred, transferred.max(total));
         Ok(())
     }
 }

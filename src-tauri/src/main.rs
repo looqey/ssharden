@@ -346,28 +346,53 @@ async fn sftp_ls(state: State<'_, AppState>, conn_id: String, path: String) -> R
     conn.list(&path).await.map_err(e)
 }
 
-/// Download a remote file to a local path.
-#[tauri::command]
-async fn sftp_get(
-    state: State<'_, AppState>,
-    conn_id: String,
-    remote: String,
-    local: String,
-) -> Result<(), String> {
-    let conn = sftp_get_conn(state.inner(), &conn_id).await?;
-    conn.download(&remote, std::path::Path::new(&local)).await.map_err(e)
+/// A throttled progress callback that emits `xfer://{id}` events `(done, total)`.
+fn xfer_progress(app: AppHandle, transfer_id: &str) -> impl FnMut(u64, u64) {
+    let event = format!("xfer://{transfer_id}");
+    let mut last = std::time::Instant::now();
+    let mut last_bytes = 0u64;
+    move |done: u64, total: u64| {
+        let now = std::time::Instant::now();
+        if done == 0
+            || done >= total
+            || done.saturating_sub(last_bytes) >= 1_048_576
+            || now.duration_since(last).as_millis() >= 150
+        {
+            last = now;
+            last_bytes = done;
+            let _ = app.emit(&event, (done, total));
+        }
+    }
 }
 
-/// Upload a local file to a remote path.
+/// Download a remote file to a local path (emits progress on `xfer://{transfer_id}`).
+#[tauri::command]
+async fn sftp_get(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    conn_id: String,
+    remote: String,
+    local: String,
+    transfer_id: String,
+) -> Result<(), String> {
+    let conn = sftp_get_conn(state.inner(), &conn_id).await?;
+    let cb = xfer_progress(app, &transfer_id);
+    conn.download(&remote, std::path::Path::new(&local), cb).await.map_err(e)
+}
+
+/// Upload a local file to a remote path (emits progress on `xfer://{transfer_id}`).
 #[tauri::command]
 async fn sftp_put(
+    app: AppHandle,
     state: State<'_, AppState>,
     conn_id: String,
     local: String,
     remote: String,
+    transfer_id: String,
 ) -> Result<(), String> {
     let conn = sftp_get_conn(state.inner(), &conn_id).await?;
-    conn.upload(std::path::Path::new(&local), &remote).await.map_err(e)
+    let cb = xfer_progress(app, &transfer_id);
+    conn.upload(std::path::Path::new(&local), &remote, cb).await.map_err(e)
 }
 
 /// Close an SFTP connection.

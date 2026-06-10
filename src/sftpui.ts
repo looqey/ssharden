@@ -1,11 +1,24 @@
 // Graphical dual-pane SFTP browser: local filesystem (left) ↔ remote host (right).
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 interface FsEntry {
   name: string;
   is_dir: boolean;
   size: number;
+}
+
+interface XferItem {
+  id: string;
+  name: string;
+  dir: "up" | "down";
+  local: string;
+  remote: string;
+  status: "queued" | "active" | "done" | "error";
+  done: number;
+  total: number;
+  error?: string;
 }
 
 interface SftpOpened {
@@ -53,6 +66,10 @@ export class SftpBrowser {
   private localPathEl!: HTMLInputElement;
   private remotePathEl!: HTMLInputElement;
   private statusEl!: HTMLElement;
+  private queueEl!: HTMLElement;
+  private queue: XferItem[] = [];
+  private processing = false;
+  private nextXfer = 0;
   private disposed = false;
 
   private constructor(connId: string, localPath: string, remotePath: string) {
@@ -96,7 +113,10 @@ export class SftpBrowser {
             <div class="fb-list" data-side="remote"></div>
           </div>
         </div>
-        <div class="fb-status"></div>
+        <div class="fb-bottom">
+          <div class="fb-queue"></div>
+          <div class="fb-status"></div>
+        </div>
       </div>`;
 
     const q = <T extends HTMLElement>(sel: string) => mount.querySelector<T>(sel)!;
@@ -105,6 +125,7 @@ export class SftpBrowser {
     this.localPathEl = q<HTMLInputElement>('.fb-path[data-side="local"]');
     this.remotePathEl = q<HTMLInputElement>('.fb-path[data-side="remote"]');
     this.statusEl = q(".fb-status");
+    this.queueEl = q(".fb-queue");
 
     mount.querySelectorAll<HTMLButtonElement>(".fb-up").forEach((b) =>
       b.addEventListener("click", () => {
@@ -191,14 +212,14 @@ export class SftpBrowser {
           xfer.title = "Download to local";
           xfer.addEventListener("click", (e) => {
             e.stopPropagation();
-            void this.download(ent.name);
+            this.enqueue("down", ent.name);
           });
         } else {
           xfer.textContent = "put →";
           xfer.title = "Upload to remote";
           xfer.addEventListener("click", (e) => {
             e.stopPropagation();
-            void this.upload(ent.name);
+            this.enqueue("up", ent.name);
           });
         }
         acts.appendChild(xfer);
@@ -284,30 +305,115 @@ export class SftpBrowser {
     }
   }
 
-  private async download(name: string): Promise<void> {
-    const remote = join(this.remotePath, name);
-    const local = join(this.localPath, name);
-    this.status(`Downloading ${name}…`);
+  // ---- Transfer queue (sequential, with live progress) ----
+
+  private enqueue(dir: "up" | "down", name: string): void {
+    const id = `x${this.nextXfer++}`;
+    this.queue.push({
+      id,
+      name,
+      dir,
+      local: join(this.localPath, name),
+      remote: join(this.remotePath, name),
+      status: "queued",
+      done: 0,
+      total: 0,
+    });
+    this.renderQueue();
+    void this.processQueue();
+  }
+
+  private async processQueue(): Promise<void> {
+    if (this.processing) return;
+    this.processing = true;
     try {
-      await invoke("sftp_get", { connId: this.connId, remote, local });
-      this.status(`Downloaded ${name} → ${this.localPath}`);
-      await this.refreshLocal();
-    } catch (e) {
-      this.status(`Download failed: ${String(e)}`);
+      for (;;) {
+        const item = this.queue.find((q) => q.status === "queued");
+        if (!item) break;
+        item.status = "active";
+        this.renderQueue();
+        await this.runTransfer(item);
+        this.renderQueue();
+      }
+    } finally {
+      this.processing = false;
     }
   }
 
-  private async upload(name: string): Promise<void> {
-    const local = join(this.localPath, name);
-    const remote = join(this.remotePath, name);
-    this.status(`Uploading ${name}…`);
+  private async runTransfer(item: XferItem): Promise<void> {
+    let unlisten: UnlistenFn | null = null;
     try {
-      await invoke("sftp_put", { connId: this.connId, local, remote });
-      this.status(`Uploaded ${name} → ${this.remotePath}`);
-      await this.refreshRemote();
+      unlisten = await listen<[number, number]>(`xfer://${item.id}`, (ev) => {
+        item.done = ev.payload[0];
+        item.total = ev.payload[1];
+        this.renderQueue();
+      });
+      if (item.dir === "up") {
+        await invoke("sftp_put", {
+          connId: this.connId,
+          local: item.local,
+          remote: item.remote,
+          transferId: item.id,
+        });
+        item.status = "done";
+        await this.refreshRemote();
+      } else {
+        await invoke("sftp_get", {
+          connId: this.connId,
+          remote: item.remote,
+          local: item.local,
+          transferId: item.id,
+        });
+        item.status = "done";
+        await this.refreshLocal();
+      }
     } catch (e) {
-      this.status(`Upload failed: ${String(e)}`);
+      item.status = "error";
+      item.error = String(e);
+    } finally {
+      if (unlisten) unlisten();
     }
+  }
+
+  private clearFinished(): void {
+    this.queue = this.queue.filter((q) => q.status === "queued" || q.status === "active");
+    this.renderQueue();
+  }
+
+  private renderQueue(): void {
+    if (this.queue.length === 0) {
+      this.queueEl.innerHTML = "";
+      return;
+    }
+    const anyFinished = this.queue.some((q) => q.status === "done" || q.status === "error");
+    const rows = this.queue
+      .map((q) => {
+        const pct =
+          q.total > 0
+            ? Math.min(100, Math.round((q.done / q.total) * 100))
+            : q.status === "done"
+              ? 100
+              : 0;
+        const arrow = q.dir === "up" ? "↑" : "↓";
+        let right: string;
+        if (q.status === "queued") right = "queued";
+        else if (q.status === "active")
+          right = q.total > 0 ? `${pct}% · ${humanSize(q.done)}/${humanSize(q.total)}` : humanSize(q.done);
+        else if (q.status === "done") right = "done";
+        else right = `error: ${esc(q.error ?? "")}`;
+        return `<div class="xf-row ${q.status}">
+            <span class="xf-arrow">${arrow}</span>
+            <span class="xf-name">${esc(q.name)}</span>
+            <span class="xf-bar"><span class="xf-fill" style="width:${pct}%"></span></span>
+            <span class="xf-right">${right}</span>
+          </div>`;
+      })
+      .join("");
+    this.queueEl.innerHTML =
+      `<div class="xf-head"><span>Transfers</span>${anyFinished ? '<button class="xf-clear">clear</button>' : ""}</div>` +
+      rows;
+    const clr = this.queueEl.querySelector<HTMLButtonElement>(".xf-clear");
+    if (clr) clr.addEventListener("click", () => this.clearFinished());
   }
 
   /** No-op: the browser reflows with CSS (kept for the tab interface). */
