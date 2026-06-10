@@ -1,123 +1,94 @@
 # ssharden
 
-**Your host fleet, unlocked everywhere — sourced from your own Vaultwarden vault.**
+Your servers live in your Vaultwarden vault. ssharden connects to them.
 
-ssharden is a cross-platform desktop app that uses a **Vaultwarden** (Bitwarden-compatible)
-vault as the single source of truth for your servers, then opens **embedded** SSH and SFTP
-sessions to them — with passwords pulled straight from the vault. Think *Termius / Royal TSO*,
-but the inventory lives in a vault you host, editable from any Bitwarden client, with no
-separate proprietary cloud. It's built on [Tauri v2](https://tauri.app) (Rust backend + web
-frontend) and [xterm.js](https://xtermjs.org).
+It's a desktop app that treats a self-hosted **Vaultwarden** (or Bitwarden) vault as
+the source of truth for your hosts, then opens SSH and SFTP sessions to them right
+inside the window — pulling the password from the vault so you don't retype it. The
+inventory stays in a vault you control and that any Bitwarden client can edit. No
+extra cloud, no separate password file.
 
-> See [`DESIGN.md`](./DESIGN.md) for the full design and [`PLAN.md`](./PLAN.md) for the
-> implementation plan.
+Built with Tauri (Rust) and xterm.js. Linux for now.
 
-## Features
+## What it does
 
-- **Unlock by account.** Log in once with the Bitwarden CLI; the app shows which account is
-  active and unlocks the vault with your master password — it never handles login itself.
-- **Host management.** Add, edit, and delete hosts inline. Copy or reveal a host's password
-  on demand (user-initiated secret egress only).
-- **Embedded SSH terminal** with **auto password-fill**: ssharden connects over a PTY and,
-  when `ssh` prompts for a password, injects the one stored in the vault — exactly once, so a
-  later in-session prompt (e.g. `sudo`) is never auto-filled. Supports jump hosts (`ssh -J`).
-- **One-click SFTP terminal** to any SSH host, reusing the same vault-backed credentials.
-- **Graphical dual-pane SFTP browser** (local ↔ remote): browse directories, and create
-  folders, rename, and delete on either side. Transfers run through a **queue with live
-  progress**, streamed in fixed-size chunks so memory stays flat for files of any size.
+- **Unlock with your account.** You log in once with the `bw` CLI; the app shows whose
+  vault it is and unlocks it with your master password. It never handles login itself.
+- **Manage hosts in-app.** Add, edit, delete. Copy or reveal a host's password when you
+  need it.
+- **SSH in a real terminal**, with the vault password typed in for you at the prompt
+  (once — a later `sudo` prompt won't get auto-filled). Jump hosts work (`ssh -J`).
+- **SFTP two ways:** a quick terminal session, or a **dual-pane file browser** — local on
+  the left, remote on the right, with make-folder / rename / delete and a transfer queue
+  that shows progress. Big files stream in chunks, so they won't eat your RAM.
 
-## How a host is modeled
+## How a host is stored
 
-A host is a normal Bitwarden **Login item** — fully readable and editable from any Bitwarden
-client. The URI **scheme** selects the protocol:
+A host is just a Bitwarden **Login item**. The URI scheme picks the protocol:
 
 ```jsonc
 {
   "name": "prod-db-01",
   "login": {
     "username": "admin",
-    "password": "…",                          // used for SSH/SFTP password auth and copy/reveal
+    "password": "…",
     "uris": [{ "uri": "ssh://admin@10.0.0.5:22" }]
   },
-  "fields": [
-    { "name": "jump", "value": "bastion.corp" } // custom field → ssh -J
-  ]
+  "fields": [{ "name": "jump", "value": "bastion.corp" }]
 }
 ```
 
-- **Scheme** (`ssh://`, `sftp://`) → which launcher runs; **host / port / user** come from the URI.
-- Protocol extras live in **named custom fields** — e.g. `jump` for an `ssh -J` bastion.
+`ssh://` or `sftp://` decides the launcher; host, port and user come from the URI.
+Extras like a bastion go in a named custom field (`jump` → `ssh -J`). Edit it from the
+ssharden host form or from any Bitwarden app — it's the same item.
 
-## Prerequisites
+## Getting started
 
-- **Rust** (stable) and **[bun](https://bun.sh)**.
-- **[Bitwarden CLI](https://bitwarden.com/help/cli/)** (`bw`): `npm install -g @bitwarden/cli`
-- **Tauri v2 Linux system libraries** (webkit2gtk etc. — the one step that needs root).
+You need **Rust**, **[bun](https://bun.sh)**, the **[Bitwarden CLI](https://bitwarden.com/help/cli/)**
+(`npm install -g @bitwarden/cli`), and the Tauri/webkit system libraries. The included
+`./setup.sh` installs the system libs, the Tauri CLI and the frontend deps in one go.
 
-Run [`./setup.sh`](./setup.sh) to install the system libraries, the Tauri CLI, and the frontend
-dependencies in one shot. (Or install the Tauri prerequisites manually per
-[the Tauri docs](https://tauri.app/start/prerequisites/).)
-
-### Log in once
-
-`bw serve` only **unlocks** an account — it never logs in. Point the CLI at your server and
-authenticate a single time:
+Point the CLI at your server and log in once (the app only ever *unlocks*, it can't log
+in for you):
 
 ```bash
-bw config server https://your-vaultwarden.example.com   # self-hosted; skip for bitwarden.com
+bw config server https://vault.example.com   # skip for bitwarden.com
 bw login
 ```
 
-After that, the app handles unlock/lock from its own window.
-
-## Run
+Then run it:
 
 ```bash
-# Install frontend deps (once)
 bun install
-
-# Dev mode (builds the Rust shell + frontend, hot-reloads the UI)
-cargo tauri dev
+cargo tauri dev          # development, with hot reload
+# or a real build:
+cargo tauri build        # produces a standalone binary + .deb
 ```
 
-Enter your master password in the app to unlock; hosts appear in the sidebar.
-
-A standalone, distributable build is:
-
-```bash
-cargo tauri build
-```
-
-### Test the core
-
-The real logic lives in the pure-Rust `ssharden-core` crate and needs no webkit/GUI to verify:
+The Rust core has no GUI dependency, so you can run its tests anywhere:
 
 ```bash
 cargo test -p ssharden-core
 ```
 
-## Status & security
+## A word on security
 
-ssharden is **early and experimental.** It inherits Bitwarden's zero-knowledge model and adds a
-connection launcher on top; the rules below are enforced in code:
+ssharden is young — treat it as such. It keeps Bitwarden's zero-knowledge model and adds
+a launcher on top:
 
-- **The master password** flows to the backend once. The **session token stays in Rust process
-  memory** — never returned to the webview, never written to disk, never logged.
-- **Secrets never touch argv or logs.** The SSH/SFTP password is injected over the **PTY**, never
-  as a command-line argument.
-- **Idle auto-lock** drops the session and returns to the unlock screen.
-- **Host-key verification:** the interactive `ssh`/`sftp` CLI paths do full `~/.ssh/known_hosts`
-  checking — never disabled, prompts surface in the terminal. The graphical SFTP browser (a
-  pure-Rust russh client) currently accepts host keys **trust-on-first-use (TOFU)**; wiring it
-  into `known_hosts` is a tracked follow-up.
-- **The `bw serve` loopback API is unauthenticated by design.** It exposes the decrypted vault
-  over localhost with no auth, so ssharden binds it to **`127.0.0.1` on an ephemeral random port**
-  (never `0.0.0.0`), kills the child process on drop, and pairs it with aggressive auto-lock.
+- Your master password reaches the backend once. The unlocked session token stays in
+  Rust memory — never sent to the UI, never written to disk, never logged.
+- Passwords go into the SSH/SFTP session over the PTY, never on a command line.
+- Idle auto-lock drops the session.
+- Host keys are checked against `~/.ssh/known_hosts` (the file your normal `ssh` uses).
+  A changed key is refused; a new host is recorded on first use.
+- The `bw serve` API that does the decryption is unauthenticated by design, so ssharden
+  binds it to `127.0.0.1` on a random port, kills it when the app exits, and leans on the
+  auto-lock. It's no more exposed than Bitwarden's own desktop app — but it does decrypt
+  your whole host list, so run it on a machine you trust.
 
-A tool that decrypts your whole host inventory is a juicy local target. ssharden is not more
-exposed than Bitwarden desktop itself, and the `bw serve` port gets the loopback + ephemeral +
-aggressive-lock treatment to keep it that way — but treat it accordingly.
+Found a hole? See [SECURITY.md](./SECURITY.md).
 
 ## License
 
-MIT — see [`LICENSE`](./LICENSE).
+MIT. See [LICENSE](./LICENSE).
