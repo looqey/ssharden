@@ -86,3 +86,8 @@ export async function hostDelete(id: string): Promise<void> {
 export async function hostPassword(id: string): Promise<string | null> {
   return invoke("host_password", { id });
 }
+
+/** Launch an external RDP session (FreeRDP window) to a host's rdp:// URI. */
+export async function rdpLaunch(hostId: string): Promise<void> {
+  return invoke("rdp_launch", { hostId });
+}

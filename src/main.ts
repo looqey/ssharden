@@ -12,6 +12,7 @@ import {
   hostUpdate,
   hostDelete,
   hostPassword,
+  rdpLaunch,
   type Host,
 } from "./vault";
 import { renderHosts } from "./hosts";
@@ -151,6 +152,7 @@ async function loadHosts(): Promise<void> {
     renderHosts(listEl, hosts, {
       onConnect: (h) => void openSession(h),
       onSftp: (h) => void openSftpBrowser(h),
+      onRdp: (h) => void launchRdp(h),
       onEdit: (h) => void editHost(h),
       onDelete: (h) => void removeHost(h),
       onCopyPassword: (h) => void revealPassword(h),
@@ -172,6 +174,17 @@ async function newHost(): Promise<void> {
     await loadHosts();
   } catch (e) {
     toast(`Create failed: ${String(e)}`);
+  }
+}
+
+async function launchRdp(host: Host): Promise<void> {
+  resetAutoLock();
+  toast(`Opening RDP to ${host.name}…`);
+  try {
+    await rdpLaunch(host.id);
+    toast(`RDP window opening for ${host.name}`);
+  } catch (e) {
+    toast(`RDP failed: ${String(e)}`);
   }
 }
 

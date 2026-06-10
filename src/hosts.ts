@@ -7,6 +7,7 @@ import type { Host } from "./vault";
 export interface HostActions {
   onConnect: (host: Host) => void;
   onSftp: (host: Host) => void;
+  onRdp: (host: Host) => void;
   onEdit: (host: Host) => void;
   onDelete: (host: Host) => void;
   onCopyPassword: (host: Host) => void;
@@ -32,18 +33,20 @@ export function renderHosts(
 ): void {
   container.innerHTML = "";
 
-  const sshHosts = hosts.filter((h) => h.uris.some((u) => u.scheme === "ssh"));
-  if (sshHosts.length === 0) {
+  const connectable = hosts.filter((h) =>
+    h.uris.some((u) => u.scheme === "ssh" || u.scheme === "rdp"),
+  );
+  if (connectable.length === 0) {
     const empty = document.createElement("p");
     empty.className = "hosts-empty";
     empty.textContent =
-      "No SSH hosts yet. Use + New host to add one (a Login item with an ssh:// URI).";
+      "No hosts yet. Use + New host to add one (a Login item with an ssh:// or rdp:// URI).";
     container.appendChild(empty);
     return;
   }
 
   const groups = new Map<string, Host[]>();
-  for (const h of sshHosts) {
+  for (const h of connectable) {
     const key = h.folder_id ?? "";
     const bucket = groups.get(key);
     if (bucket) bucket.push(h);
@@ -60,9 +63,11 @@ export function renderHosts(
     section.appendChild(title);
 
     for (const h of hs) {
-      const uri = h.uris.find((u) => u.scheme === "ssh")!;
-      const who = uri.user ?? h.username ?? "";
-      const detail = `${who ? who + "@" : ""}${uri.host}:${uri.port ?? 22}`;
+      const sshUri = h.uris.find((u) => u.scheme === "ssh");
+      const rdpUri = h.uris.find((u) => u.scheme === "rdp");
+      const primary = sshUri ?? rdpUri ?? h.uris[0];
+      const who = primary.user ?? h.username ?? "";
+      const detail = `${who ? who + "@" : ""}${primary.host}${primary.port ? ":" + primary.port : ""}`;
 
       const row = document.createElement("div");
       row.className = "host-row";
@@ -70,15 +75,16 @@ export function renderHosts(
       const main = document.createElement("button");
       main.className = "host-main";
       main.type = "button";
-      main.title = "Connect (SSH)";
+      main.title = sshUri ? "Connect (SSH)" : "Open RDP";
       main.innerHTML =
         `<span class="host-name">${escapeHtml(h.name)}</span>` +
         `<span class="host-detail">${escapeHtml(detail)}</span>`;
-      main.addEventListener("click", () => actions.onConnect(h));
+      main.addEventListener("click", () => (sshUri ? actions.onConnect(h) : actions.onRdp(h)));
 
       const acts = document.createElement("div");
       acts.className = "host-actions";
-      acts.appendChild(iconBtn("⇅", "Open SFTP", () => actions.onSftp(h)));
+      if (sshUri) acts.appendChild(iconBtn("⇅", "Open SFTP", () => actions.onSftp(h)));
+      if (rdpUri) acts.appendChild(iconBtn("🖥", "Open RDP", () => actions.onRdp(h)));
       acts.appendChild(iconBtn("⧉", "Copy password", () => actions.onCopyPassword(h)));
       acts.appendChild(iconBtn("✎", "Edit", () => actions.onEdit(h)));
       acts.appendChild(iconBtn("🗑", "Delete", () => actions.onDelete(h)));

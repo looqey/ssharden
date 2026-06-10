@@ -541,6 +541,35 @@ fn local_rm(path: String, is_dir: bool) -> Result<(), String> {
     }
 }
 
+/// Launch an external RDP session (FreeRDP window) to a host's `rdp://` URI.
+#[tauri::command]
+async fn rdp_launch(state: State<'_, AppState>, host_id: String) -> Result<(), String> {
+    let params = {
+        let guard = state.vault.lock().await;
+        let client = guard.as_ref().ok_or("vault not started")?;
+        let hosts = client.list_hosts().await.map_err(e)?;
+        let host = hosts
+            .into_iter()
+            .find(|h| h.id == host_id)
+            .ok_or("host not found")?;
+        let uri = host
+            .uris
+            .iter()
+            .find(|u| u.scheme == "rdp")
+            .ok_or("host has no rdp:// uri")?
+            .clone();
+        let password = client.host_password(&host_id).await.ok().flatten();
+        ssharden_core::rdp::RdpParams {
+            host: uri.host,
+            port: uri.port.unwrap_or(3389),
+            user: uri.user.or(host.username),
+            password,
+            domain: host.fields.get("domain").cloned(),
+        }
+    };
+    ssharden_core::rdp::launch(&params).map_err(e)
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
@@ -571,6 +600,7 @@ fn main() {
             local_mkdir,
             local_rename,
             local_rm,
+            rdp_launch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
