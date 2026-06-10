@@ -21,6 +21,9 @@ pub struct SshParams {
     pub user: Option<String>,
     /// Optional jump host (`ssh -J`).
     pub jump: Option<String>,
+    /// Optional path to a private key file (`ssh -i`), e.g. one materialized from a
+    /// vault SSH Key item. When set, only this identity is offered.
+    pub identity_file: Option<String>,
 }
 
 /// A live SSH session: an owned PTY master plus the `ssh` child process.
@@ -69,6 +72,15 @@ impl SshSession {
             if !jump.trim().is_empty() {
                 cmd.arg("-J");
                 cmd.arg(jump);
+            }
+        }
+        if let Some(identity) = &p.identity_file {
+            if !identity.is_empty() {
+                cmd.arg("-i");
+                cmd.arg(identity);
+                // Offer only this key, so ssh doesn't fall back to ~/.ssh defaults.
+                cmd.arg("-o");
+                cmd.arg("IdentitiesOnly=yes");
             }
         }
         let target = match &p.user {

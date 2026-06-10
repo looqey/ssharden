@@ -139,6 +139,29 @@ async fn host_password(state: State<'_, AppState>, id: String) -> Result<Option<
     client.host_password(&id).await.map_err(e)
 }
 
+/// Write a private key to a locked-down (0600 on unix) temp file for `ssh -i`,
+/// ensuring a trailing newline. Returns the path; the caller deletes it when done.
+fn write_temp_key(id: &str, private_key: &str) -> std::io::Result<std::path::PathBuf> {
+    let path = std::env::temp_dir().join(format!("ssharden-key-{id}"));
+    #[cfg(unix)]
+    let mut f = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)?
+    };
+    #[cfg(not(unix))]
+    let mut f = std::fs::File::create(&path)?;
+    f.write_all(private_key.as_bytes())?;
+    if !private_key.ends_with('\n') {
+        f.write_all(b"\n")?;
+    }
+    Ok(path)
+}
+
 /// Resolve a host and open `ssh` or `sftp` to it in a PTY, streaming output as
 /// `ssh://{id}` events. Shared by the ssh_connect/sftp_connect commands.
 async fn open_session(
@@ -147,8 +170,11 @@ async fn open_session(
     host_id: String,
     sftp: bool,
 ) -> Result<String, String> {
-    // Resolve the host (and its stored password) under the vault lock, then release it.
-    let (params, password) = {
+    let id = format!("s{}", state.next_id.fetch_add(1, Ordering::Relaxed));
+    let event = format!("ssh://{id}");
+
+    // Resolve the host (password + optional SSH key) under the vault lock, then release it.
+    let (params, password, key_file) = {
         let guard = state.vault.lock().await;
         let client = guard.as_ref().ok_or("vault not started")?;
         let hosts = client.list_hosts().await.map_err(e)?;
@@ -164,31 +190,55 @@ async fn open_session(
             .clone();
         // Fetch the stored password for auto-auth (best effort; None = prompt manually).
         let password = client.host_password(&host_id).await.ok().flatten();
+
+        // If the host references a vault SSH Key item (custom field `sshkey` = item id),
+        // materialize its private key to a 0600 temp file and offer it via `ssh -i`.
+        let mut identity_file = None;
+        let mut key_file: Option<std::path::PathBuf> = None;
+        if let Some(item) = host.fields.get("sshkey") {
+            if let Ok(Some(pk)) = client.ssh_private_key(item).await {
+                match write_temp_key(&id, &pk) {
+                    Ok(path) => {
+                        identity_file = Some(path.to_string_lossy().into_owned());
+                        key_file = Some(path);
+                    }
+                    Err(err) => eprintln!("ssharden: could not write temp ssh key: {err}"),
+                }
+            }
+        }
+
         (
             SshParams {
                 host: uri.host,
                 port: uri.port.unwrap_or(22),
                 user: uri.user.or(host.username),
                 jump: host.fields.get("jump").cloned(),
+                identity_file,
             },
             password,
+            key_file,
         )
     };
 
-    // Spawn ssh or sftp in a PTY (sync; no locks held).
-    let mut session = if sftp {
+    // Spawn ssh or sftp in a PTY (sync; no locks held). Clean up the temp key on failure.
+    let spawn_result = if sftp {
         SshSession::spawn_sftp(&params)
     } else {
         SshSession::spawn(&params)
-    }
-    .map_err(e)?;
+    };
+    let mut session = match spawn_result {
+        Ok(s) => s,
+        Err(err) => {
+            if let Some(p) = &key_file {
+                let _ = std::fs::remove_file(p);
+            }
+            return Err(e(err));
+        }
+    };
     let reader = session.take_reader().ok_or("could not open pty reader")?;
     // One writer, shared (portable-pty only allows a single take_writer).
     let writer = Arc::new(StdMutex::new(session.writer().map_err(e)?));
     let auth_writer = Arc::clone(&writer);
-
-    let id = format!("s{}", state.next_id.fetch_add(1, Ordering::Relaxed));
-    let event = format!("ssh://{id}");
 
     // Forward PTY bytes to the webview until EOF; when ssh asks for a password and
     // one is stored, feed it over the PTY (never on argv). Injected at most once so a
@@ -226,6 +276,10 @@ async fn open_session(
                     }
                 }
             }
+        }
+        // Session ended (EOF): remove the temp SSH key file, if any.
+        if let Some(p) = &key_file {
+            let _ = std::fs::remove_file(p);
         }
     });
 
