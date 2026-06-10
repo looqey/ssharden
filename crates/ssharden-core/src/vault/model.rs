@@ -17,6 +17,8 @@ pub struct Host {
     pub name: String,
     /// Folder id, for UI grouping (and collection id later for orgs).
     pub folder_id: Option<String>,
+    /// Resolved folder name (filled by `list_hosts`), for a friendly group label.
+    pub folder_name: Option<String>,
     /// Login username, if present.
     pub username: Option<String>,
     /// Parsed protocol URIs (one host may expose several protocols).
@@ -165,6 +167,7 @@ pub fn host_from_cipher(v: &serde_json::Value) -> Option<Host> {
         id: opt_str(v, "id").unwrap_or_default(),
         name: opt_str(v, "name").unwrap_or_default(),
         folder_id: opt_str(v, "folderId"),
+        folder_name: None, // resolved by VaultClient::list_hosts
         username: opt_str(login, "username"),
         uris,
         fields,

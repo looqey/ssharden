@@ -19,6 +19,7 @@ export interface Host {
   id: string;
   name: string;
   folder_id: string | null;
+  folder_name: string | null;
   username: string | null;
   uris: HostUri[];
   fields: Record<string, string>;

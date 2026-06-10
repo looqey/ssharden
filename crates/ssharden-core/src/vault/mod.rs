@@ -325,7 +325,44 @@ impl VaultClient {
             .and_then(|a| a.as_array())
             .ok_or_else(|| CoreError::Bw("unexpected item list shape".to_string()))?;
 
-        Ok(items.iter().filter_map(host_from_cipher).collect())
+        let mut hosts: Vec<Host> = items.iter().filter_map(host_from_cipher).collect();
+
+        // Attach friendly folder names (best effort — grouping still works without them).
+        let folders = self.list_folders().await.unwrap_or_default();
+        for h in &mut hosts {
+            if let Some(fid) = &h.folder_id {
+                h.folder_name = folders.get(fid).cloned();
+            }
+        }
+        Ok(hosts)
+    }
+
+    /// Fetch a `folder id -> name` map from the vault.
+    pub async fn list_folders(&self) -> Result<std::collections::BTreeMap<String, String>> {
+        let body = self
+            .http
+            .get(format!("{}/list/object/folders", self.base_url))
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+        check_success(&body)?;
+        let mut map = std::collections::BTreeMap::new();
+        if let Some(arr) = body
+            .get("data")
+            .and_then(|d| d.get("data"))
+            .and_then(|a| a.as_array())
+        {
+            for f in arr {
+                if let (Some(id), Some(name)) = (
+                    f.get("id").and_then(|x| x.as_str()),
+                    f.get("name").and_then(|x| x.as_str()),
+                ) {
+                    map.insert(id.to_string(), name.to_string());
+                }
+            }
+        }
+        Ok(map)
     }
 
     /// Fetch a single item's full (decrypted) cipher JSON by id.

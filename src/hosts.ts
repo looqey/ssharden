@@ -59,7 +59,9 @@ export function renderHosts(
 
     const title = document.createElement("div");
     title.className = "host-group-title";
-    title.textContent = folder ? `Folder ${folder.slice(0, 8)}` : "Ungrouped";
+    const folderName = hs[0]?.folder_name;
+    title.textContent =
+      folderName ?? (folder ? `Folder ${folder.slice(0, 8)}` : "Ungrouped");
     section.appendChild(title);
 
     for (const h of hs) {
