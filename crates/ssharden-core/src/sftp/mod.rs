@@ -146,7 +146,7 @@ impl SftpConn {
             on_progress(transferred, total);
         }
         lf.flush().await?;
-        on_progress(transferred, transferred.max(total));
+        on_progress(transferred, total.max(transferred));
         Ok(())
     }
 
@@ -189,7 +189,12 @@ impl SftpConn {
             .await
             .map_err(sftp_err)?;
         let mut buf = vec![0u8; 128 * 1024];
-        let mut transferred = 0u64;
+        // russh-sftp queues writes without awaiting server ACKs, so write_all returns
+        // almost immediately. Flush periodically so progress reflects *confirmed* bytes
+        // (an honest bar) and write errors surface mid-stream rather than only at the end.
+        const FLUSH_EVERY: u64 = 1024 * 1024;
+        let mut written = 0u64;
+        let mut acked = 0u64;
         on_progress(0, total);
         loop {
             let n = lf.read(&mut buf).await?;
@@ -197,12 +202,16 @@ impl SftpConn {
                 break;
             }
             wf.write_all(&buf[..n]).await?;
-            transferred += n as u64;
-            on_progress(transferred, total);
+            written += n as u64;
+            if written - acked >= FLUSH_EVERY {
+                wf.flush().await?;
+                acked = written;
+                on_progress(acked, total);
+            }
         }
         wf.flush().await?;
         wf.shutdown().await?;
-        on_progress(transferred, transferred.max(total));
+        on_progress(written, total);
         Ok(())
     }
 }
