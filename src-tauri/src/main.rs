@@ -285,6 +285,20 @@ async fn open_session(
     // Forward PTY bytes to the webview until EOF; when ssh asks for a password and
     // one is stored, feed it over the PTY (never on argv). Injected at most once so a
     // later in-session prompt (e.g. sudo) is never auto-filled with the SSH password.
+    //
+    // The match is exact, not "ends with password:": only the prompts OpenSSH itself
+    // produces for THIS user@host trigger injection — "user@host's password:" and the
+    // keyboard-interactive "(user@host) Password:". A server banner crafted to end in
+    // "password:", a jump host's prompt, or an in-session prompt never matches; in
+    // those cases the user simply types the password by hand.
+    let prompt_user = params
+        .user
+        .clone()
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
+    let prompt_target = format!("{prompt_user}@{}", params.host).to_lowercase();
+    let expect_openssh = format!("{prompt_target}'s password:");
+    let expect_kbdint = format!("({prompt_target}) password:");
     let app_handle = app.clone();
     let mut reader: Box<dyn Read + Send> = reader;
     std::thread::spawn(move || {
@@ -305,7 +319,8 @@ async fn open_session(
                             tail.drain(..cut);
                         }
                         let recent = String::from_utf8_lossy(&tail).to_lowercase();
-                        if recent.trim_end().ends_with("password:") {
+                        let recent = recent.trim_end();
+                        if recent.ends_with(&expect_openssh) || recent.ends_with(&expect_kbdint) {
                             if let Some(pw) = &password {
                                 if let Ok(mut w) = auth_writer.lock() {
                                     let _ = w.write_all(pw.as_bytes());
@@ -393,8 +408,8 @@ struct SftpOpened {
 /// Open an SFTP connection to a host and return its id + remote home directory.
 #[tauri::command]
 async fn sftp_open(state: State<'_, AppState>, host_id: String) -> Result<SftpOpened, String> {
-    // Resolve host + password under the vault lock.
-    let (host, port, user, password) = {
+    // Resolve host + password (+ optional vault SSH key) under the vault lock.
+    let (host, port, user, password, private_key) = {
         let guard = state.vault.lock().await;
         let client = guard.as_ref().ok_or("vault not started")?;
         let hosts = client.list_hosts().await.map_err(e)?;
@@ -406,15 +421,22 @@ async fn sftp_open(state: State<'_, AppState>, host_id: String) -> Result<SftpOp
             .ok_or("host has no ssh:// uri")?
             .clone();
         let password = client.host_password(&host_id).await.ok().flatten();
+        // Same `sshkey` custom field the terminal path uses; the PEM is passed in
+        // memory to russh (no temp file on this path).
+        let mut private_key = None;
+        if let Some(item) = h.fields.get("sshkey") {
+            private_key = client.ssh_private_key(item).await.ok().flatten();
+        }
         (
             uri.host,
             uri.port.unwrap_or(22),
             uri.user.or(h.username).unwrap_or_default(),
             password.unwrap_or_default(),
+            private_key,
         )
     };
 
-    let conn = SftpConn::connect(&host, port, &user, &password)
+    let conn = SftpConn::connect(&host, port, &user, &password, private_key.as_deref())
         .await
         .map_err(e)?;
     let home = conn.canonicalize(".").await.unwrap_or_else(|_| ".".to_string());

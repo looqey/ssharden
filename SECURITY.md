@@ -19,7 +19,9 @@ file browser. Read `DESIGN.md` and `PLAN.md` for architecture context.
   sessions) and exposes `#[tauri::command]`s to the webview.
 - **Webview / frontend** (`src/`, TypeScript + xterm.js): the UI. Treated as
   the *least* trusted in-process component — it may only call the explicitly
-  registered commands.
+  registered commands, and runs under a strict Content-Security-Policy
+  (`src-tauri/tauri.conf.json`: `default-src 'self'`, no remote origins;
+  `'unsafe-inline'` is granted to **styles only**, which xterm.js requires).
 
 The principal trust boundary is **webview ↔ Rust**. The design goal is that the
 webview never holds the vault session token and never receives a long-lived
@@ -48,9 +50,25 @@ secret except by explicit, user-initiated action (password reveal/copy).
   only host/port/user/jump on the command line. When the server prompts for a
   password and one is stored, the password is fed **over the PTY**
   (`src-tauri/src/main.rs`, `open_session`), and only **once** per session, so a
-  later in-session prompt (e.g. `sudo`) is not auto-filled.
+  later in-session prompt (e.g. `sudo`) is not auto-filled. The external RDP
+  launcher feeds the password to FreeRDP over **stdin** (`/from-stdin`), never
+  argv.
+- **Auto-fill matches the exact expected prompt**, not any text ending in
+  `password:` — only `user@host's password:` or the keyboard-interactive
+  `(user@host) Password:` for the specific target being connected triggers
+  injection. A crafted server banner, a jump host's prompt, or an in-session
+  prompt does not match.
 - **Host-key checking is never disabled** on the interactive `ssh`/`sftp` path;
-  prompts surface in the embedded terminal and reuse `~/.ssh/known_hosts`.
+  prompts surface in the embedded terminal and reuse `~/.ssh/known_hosts`. The
+  graphical SFTP browser's russh client verifies against the same
+  `~/.ssh/known_hosts` (changed keys are refused; new hosts are recorded
+  `accept-new`-style).
+- **Vault SSH keys**: the terminal path materializes a private key to a `0600`
+  temp file (removed when the session ends or spawn fails); the graphical SFTP
+  browser passes the key to russh **in memory**, with no file at all.
+- **RDP server certificates are pinned trust-on-first-use** by FreeRDP
+  (`/cert:tofu`): the first-seen cert is stored under `~/.config/freerdp` and a
+  changed cert refuses to connect.
 - **Password egress** to the webview happens only through the `host_password`
   command, which is a deliberate, user-initiated copy/reveal action.
 
@@ -70,21 +88,18 @@ secret except by explicit, user-initiated action (password reveal/copy).
 These are accepted, documented trade-offs in the current version. Treat them as
 the security caveats of running ssharden.
 
-### 1. SFTP host key is Trust-On-First-Use (TOFU)
+### 1. First contact is trust-on-first-use (SSH browser and RDP)
 
-The russh-based SFTP client used by the **graphical file browser**
-(`crates/ssharden-core/src/sftp/mod.rs`, `check_server_key`) currently returns
-`Ok(true)` for **any** server key — it does not verify against
-`~/.ssh/known_hosts`, and it does not even pin the key for the duration of the
-app. This means the graphical SFTP browser provides **no protection against a
-man-in-the-middle** between the app and the SSH server, and because this path
-authenticates with the host's **stored password**, a MITM can capture that
-password. The interactive `ssh`/`sftp` CLI path is unaffected (it does full
-`known_hosts` verification). Wiring `known_hosts` verification into the russh
-client is the top follow-up.
-
-**Mitigation today:** only use the graphical SFTP browser on networks you
-trust, or prefer the interactive `sftp` session (which honours `known_hosts`).
+The graphical SFTP browser verifies server keys against `~/.ssh/known_hosts`
+and **refuses a changed key**, but an *unknown* host is recorded and accepted
+on first contact (OpenSSH `accept-new` behavior) without an interactive
+fingerprint prompt. Likewise, FreeRDP pins the RDP server certificate on first
+contact (`/cert:tofu`) and refuses changes afterwards. In both cases the very
+first connection to a host is the unauthenticated window; a MITM present *at
+first contact* can pin itself. A changed RDP cert currently fails **silently**
+(the detached FreeRDP process exits before opening a window) — remove the
+host's entry under `~/.config/freerdp/server/` to re-pin after a legitimate
+rotation.
 
 ### 2. Loopback trust assumption for `bw serve`
 
@@ -99,19 +114,16 @@ This is the standard `bw serve` threat model: ssharden trusts the local user
 account. If untrusted code runs as your user, your unlocked vault is already at
 risk regardless of ssharden.
 
-### 3. Password-prompt auto-injection heuristic
+### 3. Residual password-prompt mimicry
 
-Auto-fill detects the server's password prompt by checking whether the recent
-PTY output ends with `password:` (case-insensitive). A hostile or misconfigured
-server could craft banner/MOTD text to elicit the password injection, or to make
-the first prompt something other than the intended SSH auth prompt. Injection is
-capped at once per session to bound the blast radius.
-
-### 4. No Content-Security-Policy
-
-`src-tauri/tauri.conf.json` sets `app.security.csp` to `null`. The frontend is
-local and loads no remote content, but a CSP would harden against any future
-injection of attacker-controlled strings (host names, error text) into the DOM.
+Auto-fill now requires the **exact** OpenSSH prompt for the connected target
+(see Secret handling), which defeats banner tricks and cross-host confusion.
+What remains: the server you are connecting to can itself emit that exact
+string (e.g. in a post-login MOTD when key auth succeeded without a password
+prompt) and capture the stored password — but the secret at risk is only the
+password stored *for that same server*. Injection remains capped at once per
+session. Servers you connect to are semi-trusted; rotate the stored password if
+a host you no longer trust may have elicited it.
 
 ## Reporting a vulnerability
 

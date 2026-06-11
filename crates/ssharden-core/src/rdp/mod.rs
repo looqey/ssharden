@@ -71,10 +71,12 @@ pub fn launch(p: &RdpParams) -> Result<()> {
     if let Some(d) = p.domain.as_deref().filter(|s| !s.is_empty()) {
         cmd.arg(format!("/d:{d}"));
     }
-    // Accept the server cert: self-signed RDP certs are the norm, and a detached process
-    // can't answer an interactive trust prompt. NOTE: this does not verify the RDP host's
-    // identity — a known tradeoff of the external launcher (tighten in a later phase).
-    cmd.arg(if is_v3 { "/cert:ignore" } else { "/cert-ignore" });
+    // Trust-on-first-use for the server cert: self-signed RDP certs are the norm and a
+    // detached process can't answer an interactive trust prompt, so FreeRDP pins the
+    // cert on first contact (~/.config/freerdp) and refuses a *changed* cert afterwards.
+    // A changed cert therefore fails silently (no window opens) — delete the host's
+    // entry under ~/.config/freerdp/server/ to re-pin after a legitimate rotation.
+    cmd.arg(if is_v3 { "/cert:tofu" } else { "/cert-tofu" });
     cmd.arg("/dynamic-resolution");
 
     let feed_pw = p.password.as_deref().filter(|s| !s.is_empty());

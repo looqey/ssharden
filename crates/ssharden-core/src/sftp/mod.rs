@@ -75,8 +75,18 @@ pub struct SftpConn {
 }
 
 impl SftpConn {
-    /// Connect to `host:port` as `user` with password auth and open the SFTP subsystem.
-    pub async fn connect(host: &str, port: u16, user: &str, password: &str) -> Result<SftpConn> {
+    /// Connect to `host:port` as `user` and open the SFTP subsystem.
+    ///
+    /// Auth mirrors the terminal path: if the host has a vault SSH key, try it first
+    /// (the PEM stays in memory — no temp file on this path); fall back to the stored
+    /// password if the key is rejected or absent.
+    pub async fn connect(
+        host: &str,
+        port: u16,
+        user: &str,
+        password: &str,
+        private_key: Option<&str>,
+    ) -> Result<SftpConn> {
         let config = Arc::new(client::Config::default());
         let handler = ClientHandler {
             host: host.to_string(),
@@ -86,10 +96,25 @@ impl SftpConn {
             .await
             .map_err(|e| CoreError::Sftp(format!("connect failed: {e}")))?;
 
-        let authed = session
-            .authenticate_password(user, password)
-            .await
-            .map_err(|e| CoreError::Sftp(format!("auth error: {e}")))?;
+        let mut authed = false;
+        if let Some(pem) = private_key.filter(|p| !p.trim().is_empty()) {
+            let key = russh::keys::decode_secret_key(pem, None).map_err(|err| {
+                CoreError::Sftp(format!(
+                    "could not parse the vault SSH key (passphrase-protected keys are not \
+                     supported here yet): {err}"
+                ))
+            })?;
+            authed = session
+                .authenticate_publickey(user, Arc::new(key))
+                .await
+                .map_err(|e| CoreError::Sftp(format!("key auth error: {e}")))?;
+        }
+        if !authed && !password.is_empty() {
+            authed = session
+                .authenticate_password(user, password)
+                .await
+                .map_err(|e| CoreError::Sftp(format!("auth error: {e}")))?;
+        }
         if !authed {
             return Err(CoreError::Sftp("authentication failed".to_string()));
         }
