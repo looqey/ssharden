@@ -19,7 +19,7 @@ pub struct RdpParams {
 /// Find an `xfreerdp` binary (FreeRDP 3 first, then 2) on PATH or common dirs.
 #[cfg(target_os = "linux")]
 fn resolve_freerdp() -> Option<String> {
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     let names = ["xfreerdp3", "xfreerdp"];
     if let Some(path) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path) {
@@ -35,7 +35,7 @@ fn resolve_freerdp() -> Option<String> {
         for n in names {
             let c = Path::new(dir).join(n);
             if c.is_file() {
-                return Some(PathBuf::from(c).to_string_lossy().into_owned());
+                return Some(c.to_string_lossy().into_owned());
             }
         }
     }
