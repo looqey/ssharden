@@ -30,6 +30,7 @@ export function renderHosts(
   container: HTMLElement,
   hosts: Host[],
   actions: HostActions,
+  emptyMessage?: string,
 ): void {
   container.innerHTML = "";
 
@@ -40,6 +41,7 @@ export function renderHosts(
     const empty = document.createElement("p");
     empty.className = "hosts-empty";
     empty.textContent =
+      emptyMessage ??
       "No hosts yet. Use + New host to add one (a Login item with an ssh:// or rdp:// URI).";
     container.appendChild(empty);
     return;

@@ -44,6 +44,9 @@ const tabs: Tab[] = [];
 
 /** Folders cached from the last host load, for the host form's picker. */
 let currentFolders: Folder[] = [];
+let currentHosts: Host[] = [];
+let hostQuery = "";
+let searchHotkeyInstalled = false;
 
 function root(): HTMLDivElement {
   const app = document.querySelector<HTMLDivElement>("#app");
@@ -135,6 +138,8 @@ async function showApp(): Promise<void> {
           <button id="new-host" class="newbtn">+ New host</button>
           <button id="manage-folders" class="ghost" title="Manage folders">Folders</button>
         </div>
+        <input id="host-search" class="host-search" type="search"
+               placeholder="Search hosts…  ( / )" autocomplete="off" spellcheck="false" />
         <div class="host-list" id="host-list"><p class="hosts-empty">Loading…</p></div>
       </aside>
       <section class="workspace">
@@ -150,6 +155,11 @@ async function showApp(): Promise<void> {
   app.querySelector<HTMLButtonElement>("#manage-folders")!.addEventListener("click", () => {
     void openFolderManager(toast).then(() => loadHosts());
   });
+  app.querySelector<HTMLInputElement>("#host-search")!.addEventListener("input", (e) => {
+    hostQuery = (e.target as HTMLInputElement).value;
+    renderHostList();
+  });
+  installSearchHotkey();
 
   await loadHosts();
 }
@@ -159,18 +169,62 @@ async function loadHosts(): Promise<void> {
   if (!listEl) return;
   try {
     currentFolders = await vaultFolders().catch(() => []);
-    const hosts: Host[] = await vaultListHosts();
-    renderHosts(listEl, hosts, {
+    currentHosts = await vaultListHosts();
+    renderHostList();
+  } catch (e) {
+    listEl.innerHTML = `<p class="hosts-empty">Failed to load hosts: ${esc(String(e))}</p>`;
+  }
+}
+
+/** Re-render the host list from the cached hosts, applying the search filter. */
+function renderHostList(): void {
+  const listEl = document.querySelector<HTMLElement>("#host-list");
+  if (!listEl) return;
+  const q = hostQuery.trim().toLowerCase();
+  const hosts = !q
+    ? currentHosts
+    : currentHosts.filter((h) => {
+        const hay = [
+          h.name,
+          h.username ?? "",
+          h.folder_name ?? "",
+          ...h.uris.flatMap((u) => [u.host, u.user ?? ""]),
+        ]
+          .join("\n")
+          .toLowerCase();
+        return hay.includes(q);
+      });
+  renderHosts(
+    listEl,
+    hosts,
+    {
       onConnect: (h) => void openSession(h),
       onSftp: (h) => void openSftpBrowser(h),
       onRdp: (h) => void launchRdp(h),
       onEdit: (h) => void editHost(h),
       onDelete: (h) => void removeHost(h),
       onCopyPassword: (h) => void revealPassword(h),
-    });
-  } catch (e) {
-    listEl.innerHTML = `<p class="hosts-empty">Failed to load hosts: ${esc(String(e))}</p>`;
-  }
+    },
+    q ? `No hosts match “${hostQuery.trim()}”.` : undefined,
+  );
+}
+
+/** Focus host search on `/` or Ctrl+F — unless typing in an input or a terminal. */
+function installSearchHotkey(): void {
+  if (searchHotkeyInstalled) return;
+  searchHotkeyInstalled = true;
+  document.addEventListener("keydown", (e) => {
+    const isSlash = e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey;
+    const isCtrlF = e.key === "f" && (e.ctrlKey || e.metaKey);
+    if (!isSlash && !isCtrlF) return;
+    const t = e.target as HTMLElement | null;
+    if (isSlash && t?.closest("input, textarea, select, [contenteditable], .xterm")) return;
+    const search = document.querySelector<HTMLInputElement>("#host-search");
+    if (!search) return;
+    e.preventDefault();
+    search.focus();
+    search.select();
+  });
 }
 
 // ---------- Host management ----------

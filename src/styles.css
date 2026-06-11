@@ -153,6 +153,25 @@ button {
   border-color: var(--accent);
 }
 
+.host-search {
+  margin: 0.5rem 0.6rem 0;
+  background: var(--panel-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.55rem;
+  font-size: 0.85rem;
+}
+
+.host-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.host-search::placeholder {
+  color: var(--muted);
+}
+
 .host-list {
   overflow-y: auto;
   padding: 0.5rem;
