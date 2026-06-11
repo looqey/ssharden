@@ -26,6 +26,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   side by side.
 - File operations in the SFTP browser: create folder, rename, and delete.
 - SFTP transfer queue with live per-transfer progress bars.
+- One-click external RDP via FreeRDP (`xfreerdp`), password fed over stdin.
+- SSH key auth from a vault SSH Key item (host `sshkey` custom field), used by
+  both the terminal and the graphical SFTP browser.
+- Hosts grouped by their real Bitwarden folder names; folder picker in the
+  host form plus a folder manager (create/rename/delete).
+- Host search/filter in the sidebar (`/` or Ctrl+F to focus).
+- CI and cross-platform release workflows (GitHub Actions).
+
+### Security
+
+- SSH password auto-fill matches only the exact OpenSSH prompt for the
+  connected target — crafted banners and jump-host prompts can no longer
+  elicit the stored password.
+- The graphical SFTP browser verifies server host keys against
+  `~/.ssh/known_hosts` (refuses changed keys, `accept-new` on first contact).
+- RDP server certificates are pinned trust-on-first-use (`/cert:tofu`)
+  instead of ignored.
+- Strict Content-Security-Policy on the webview.
 
 ### Fixed
 
@@ -38,3 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a Tauri capability granting `core:default` so the frontend can listen
   for and emit events.
 - Valid app icon and a clear "bw not logged in" error message on startup.
+- SFTP upload progress reflects server-confirmed bytes (flush every 1 MB)
+  instead of locally-queued writes.
+- `bw` resolved to an absolute path and its directory put on the child PATH,
+  fixing launches from the installed `.deb` desktop entry.

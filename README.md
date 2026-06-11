@@ -10,6 +10,8 @@ extra cloud, no separate password file.
 
 Built with Tauri (Rust) and xterm.js. Linux for now.
 
+![ssharden unlock screen](docs/img/unlock.png)
+
 ## What it does
 
 - **Unlock with your account.** You log in once with the `bw` CLI; the app shows whose
