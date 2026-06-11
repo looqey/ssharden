@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/img/logo.png" width="128" alt="ssharden logo"/></p>
+
 # ssharden
 
 Your servers live in your Vaultwarden vault. ssharden connects to them.
@@ -9,8 +11,6 @@ inventory stays in a vault you control and that any Bitwarden client can edit. N
 extra cloud, no separate password file.
 
 Built with Tauri (Rust) and xterm.js. Linux for now.
-
-![ssharden unlock screen](docs/img/unlock.png)
 
 ## What it does
 
