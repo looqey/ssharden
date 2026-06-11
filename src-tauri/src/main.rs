@@ -634,6 +634,57 @@ async fn rdp_launch(state: State<'_, AppState>, host_id: String) -> Result<(), S
     ssharden_core::rdp::launch(&params).map_err(e)
 }
 
+// ---------------- IronRDP spike step 0: IPC throughput probe ----------------
+//
+// Dev instrumentation behind SSHARDEN_PROBE=1: streams synthetic RGBA frames over a
+// raw `ipc::Channel` so we can measure webkit2gtk IPC + canvas paint throughput before
+// committing to the embedded-RDP frame transport (docs/IRONRDP.md, step 0).
+
+/// True when the IPC throughput probe should auto-run (`SSHARDEN_PROBE=1`).
+#[tauri::command]
+fn probe_enabled() -> bool {
+    std::env::var("SSHARDEN_PROBE").map(|v| v == "1").unwrap_or(false)
+}
+
+/// Stream `count` synthetic frames of `width`x`height` RGBA pixels over a raw IPC
+/// channel. Payload layout: 16-byte header (seq/width/height/reserved, LE u32) + pixels.
+#[tauri::command]
+async fn probe_frames(
+    channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+    width: u32,
+    height: u32,
+    count: u32,
+) -> Result<(), String> {
+    let pixel_bytes = (width as usize) * (height as usize) * 4;
+    // Build one frame's pixels up front; per-frame we only vary a color byte, so the
+    // probe measures transport + paint, not synthetic pixel generation.
+    let mut px = vec![0u8; pixel_bytes];
+    for (i, chunk) in px.chunks_exact_mut(4).enumerate() {
+        chunk[0] = (i & 0xff) as u8;
+        chunk[1] = ((i >> 8) & 0xff) as u8;
+        chunk[3] = 0xff;
+    }
+    for seq in 0..count {
+        let mut buf = Vec::with_capacity(16 + pixel_bytes);
+        buf.extend_from_slice(&seq.to_le_bytes());
+        buf.extend_from_slice(&width.to_le_bytes());
+        buf.extend_from_slice(&height.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        px.chunks_exact_mut(4).for_each(|c| c[2] = (seq * 16 % 256) as u8);
+        buf.extend_from_slice(&px);
+        channel
+            .send(tauri::ipc::InvokeResponseBody::Raw(buf))
+            .map_err(e)?;
+    }
+    Ok(())
+}
+
+/// Print a probe report from the webview to stdout.
+#[tauri::command]
+fn probe_report(report: String) {
+    println!("[probe] {report}");
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
@@ -669,6 +720,9 @@ fn main() {
             local_rename,
             local_rm,
             rdp_launch,
+            probe_enabled,
+            probe_frames,
+            probe_report,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

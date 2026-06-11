@@ -1,6 +1,6 @@
 # Embedded RDP via IronRDP — design note
 
-Status: **research done, spike not started.** Today RDP launches an external
+Status: **research done; spike step 0 PASSED** (see results below). Today RDP launches an external
 FreeRDP window (`crates/ssharden-core/src/rdp/mod.rs`); this doc captures the
 plan for rendering RDP sessions *inside* the app, based on a June 2026 survey
 of IronRDP (Devolutions' pure-Rust RDP stack — production-proven in
@@ -118,11 +118,26 @@ src/rdp.ts    canvas per session tab; channel.onmessage → putImageData;
               pointer/keyboard → batched rdp_input; scancode map module
 ```
 
+## Step 0 results (2026-06-11, this machine, software-rendered Xephyr)
+
+The probe lives in the tree behind `SSHARDEN_PROBE=1` (`probe_frames`/`probe_report`
+commands + `src/probe.ts`); run `SSHARDEN_PROBE=1 ./ssharden` to repeat it.
+
+| Scenario | Result |
+|---|---|
+| 64 KB dirty rects (128×128) × 300 | **1863 fps, 122 MB/s**, paint avg 0.04 ms |
+| 4 MB full frames (1280×800) × 30 | **43 fps, 175 MB/s**, paint avg 0.83 ms, max 6 ms |
+
+**Gate passed decisively.** Even worst-case full-frame streaming sustains 43 fps over
+the raw channel on webkit2gtk *without* GPU acceleration; steady-state dirty-rect
+traffic is orders of magnitude inside budget. The `ipc::Channel` → canvas transport
+is locked in; no WebSocket fallback needed.
+
 ## Spike plan (~3–4 days to a demoable session)
 
 | Step | Work | Est. |
 |---|---|---|
-| 0 | IPC throughput probe: push synthetic 4 MB + 64 KB raw payloads over `ipc::Channel` to a canvas on webkit2gtk; measure msg/s + paint time | 2–3 h |
+| 0 | ~~IPC throughput probe~~ — **done, passed** (results above) | ~~2–3 h~~ |
 | 1 | Pin crates; port `screenshot.rs` into a core integration bin: connect to a Windows VM (NLA on), save first frame as PNG | 4–6 h |
 | 2 | `RdpSession` tokio task + `rdp_connect` resolving creds from the vault; stream dirty rects to a canvas tab — **live view-only desktop** | 6–8 h |
 | 3 | Mouse (move/click/wheel) — *milestone: usable point-and-click* | 3–4 h |

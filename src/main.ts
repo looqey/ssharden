@@ -22,6 +22,7 @@ import { openHostForm } from "./form";
 import { openFolderManager } from "./folders";
 import { TerminalSession } from "./terminal";
 import { SftpBrowser } from "./sftpui";
+import { maybeRunProbe } from "./probe";
 
 const AUTO_LOCK_MS = 10 * 60 * 1000;
 
@@ -445,4 +446,8 @@ for (const evt of ["keydown", "mousedown", "mousemove"]) {
   window.addEventListener(evt, () => resetAutoLock(), { passive: true });
 }
 
-window.addEventListener("DOMContentLoaded", () => showUnlock());
+window.addEventListener("DOMContentLoaded", () => {
+  void maybeRunProbe().then((ran) => {
+    if (!ran) showUnlock();
+  });
+});
